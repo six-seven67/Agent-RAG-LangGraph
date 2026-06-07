@@ -7,7 +7,7 @@
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from src import config_data as config
+import src.config as config
 
 
 # 构建 MySQL 异步连接 URL

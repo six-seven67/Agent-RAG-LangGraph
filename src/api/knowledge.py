@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.database import get_async_session
 from src.db.models import User, KnowledgeDoc
 from src.auth.security import get_current_user
-from src.knowledge_base import KnowledgeBaseService, get_string_md5
+from src.knowledge import KnowledgeBaseService, get_string_md5
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识库"])
 
@@ -24,7 +24,7 @@ def _get_kb_service(user_id: int) -> KnowledgeBaseService:
 
     每个用户使用独立的 Chroma collection（物理隔离）。
     """
-    from src import config_data as config
+    import src.config as config
     collection_name = config.get_user_collection_name(user_id)
     return KnowledgeBaseService(collection_name=collection_name)
 

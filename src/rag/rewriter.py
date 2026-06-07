@@ -17,7 +17,7 @@
 from typing import List, Optional
 from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_core.messages import BaseMessage
-from src import config_data as config
+import src.config as config
 
 
 REWRITE_SYSTEM_PROMPT = """你是一个查询优化专家。你的任务是将用户的模糊、简短或不完整的查询改写为清晰、具体的检索查询。

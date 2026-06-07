@@ -2,18 +2,17 @@
 对话 API 路由
 
 POST /api/chat/               — 发送消息（非流式）
-POST /api/chat/stream         — 发送消息（SSE 流式）
+POST /api/chat/stream         — 发送消息（SSE 流式，含 Agent 事件）
 GET  /api/chat/history/{sid}  — 获取会话历史
 DELETE /api/chat/history/{sid} — 清空会话历史
 GET  /api/chat/sessions       — 获取用户会话列表
 """
 
 import hashlib
+import json
 import uuid
-from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -21,24 +20,19 @@ from sse_starlette.sse import EventSourceResponse
 from src.db.database import get_async_session
 from src.db.models import User, ChatHistory
 from src.auth.security import get_current_user
-from src import config_data as config
-from src.cache.redis_client import get_cached_query, set_cached_query
+import src.config as config
 
 router = APIRouter(prefix="/api/chat", tags=["对话"])
 
 
-def _get_rag_service(user_id: int = None):
-    """懒加载 RAG 服务实例（支持用户隔离）。
+def _get_agent_service(user_id: int = None):
+    """懒加载 Agent 服务实例（支持用户隔离）。
 
     Args:
-        user_id: 用户 ID，None 时使用默认 collection
+        user_id: 用户 ID，None 时使用默认配置
     """
-    from src.rag_async import AsyncRagService
-    return AsyncRagService(user_id=user_id)
-
-
-def _query_md5(query: str) -> str:
-    return hashlib.md5(query.encode()).hexdigest()
+    from src.agent.service import AgentService
+    return AgentService(user_id=user_id)
 
 
 # ==================== 获取会话列表 ====================
@@ -53,7 +47,6 @@ async def list_sessions(
 
     每个会话返回其第一条用户消息作为会话标题，便于前端展示。
     """
-    # 子查询：每个会话的第一条用户消息（按时间升序取最早的那条）
     from sqlalchemy import and_
 
     # 1. 获取所有会话的 session_id 和最近活动时间
@@ -88,7 +81,7 @@ async def list_sessions(
             .limit(1)
         )
         first_msg = first_msg_result.scalar_one_or_none()
-        title = first_msg[:50] if first_msg else "新会话"  # 截断过长标题
+        title = first_msg[:50] if first_msg else "新会话"
 
         session_list.append({
             "session_id": sid,
@@ -167,9 +160,12 @@ async def chat(
     db_session.add(user_msg)
     await db_session.commit()
 
-    # 调用 RAG 服务（用户隔离）
-    rag_svc = _get_rag_service(user_id=current_user.id)
-    answer = await rag_svc.ainvoke({"input": query}, session_config)
+    # 调用 Agent 服务（用户隔离）
+    agent_svc = _get_agent_service(user_id=current_user.id)
+    try:
+        answer = await agent_svc.ainvoke({"input": query}, session_config)
+    finally:
+        await agent_svc.close()
 
     # 保存 AI 回答
     ai_msg = ChatHistory(
@@ -200,8 +196,17 @@ async def chat_stream(
     """
     发送消息并获取流式 AI 回答（Server-Sent Events）。
 
-    事件格式:
-        data: {"token": "文本片段"}
+    Agent 模式事件类型:
+        event: token
+        data: 文本片段
+
+        event: tool_start
+        data: {"tools": [{"name": "...", "args": {...}}]}
+
+        event: tool_end
+        data: {"tool": "...", "result_preview": "..."}
+
+        event: done
         data: [DONE]
 
     - query: 用户查询
@@ -212,7 +217,7 @@ async def chat_stream(
 
     session_config = config.build_session_config(session_id, user_id=current_user.id)
 
-    # 保存用户消息
+    # 保存用户消息到 MySQL
     user_msg = ChatHistory(
         user_id=current_user.id,
         session_id=session_id,
@@ -222,20 +227,43 @@ async def chat_stream(
     db_session.add(user_msg)
     await db_session.commit()
 
-    rag_svc = _get_rag_service(user_id=current_user.id)
+    agent_svc = _get_agent_service(user_id=current_user.id)
 
     async def event_generator():
-        full_answer = []
+        full_answer_parts = []
         try:
-            async for chunk in rag_svc.astream({"input": query}, session_config):
-                full_answer.append(chunk)
-                yield {"event": "token", "data": chunk}
+            async for event in agent_svc.astream(
+                {"input": query}, session_config
+            ):
+                event_type = event["type"]
+                event_data = event["data"]
+
+                if event_type == "token":
+                    full_answer_parts.append(event_data)
+                    yield {"event": "token", "data": event_data}
+
+                elif event_type == "tool_start":
+                    yield {
+                        "event": "tool_start",
+                        "data": json.dumps(event_data, ensure_ascii=False),
+                    }
+
+                elif event_type == "tool_end":
+                    yield {
+                        "event": "tool_end",
+                        "data": json.dumps(event_data, ensure_ascii=False),
+                    }
+
+                elif event_type == "thinking":
+                    yield {"event": "thinking", "data": ""}
+
         except Exception as e:
             yield {"event": "error", "data": str(e)}
             return
+
         finally:
-            # 流结束后保存 AI 回答
-            answer = "".join(full_answer)
+            # 流结束后保存 AI 回答到 MySQL
+            answer = "".join(full_answer_parts)
             if answer:
                 ai_msg = ChatHistory(
                     user_id=current_user.id,
@@ -245,6 +273,8 @@ async def chat_stream(
                 )
                 db_session.add(ai_msg)
                 await db_session.commit()
+
+            await agent_svc.close()
 
         yield {"event": "done", "data": "[DONE]"}
 

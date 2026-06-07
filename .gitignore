@@ -14,15 +14,24 @@ dist/
 build/
 
 # ===== 向量库与本地数据（体积大、可重建）=====
-chroma.db/
+data/chroma/
 *.sqlite3
 
+# ===== 文档（仅 README.md 上传）=====
+GIT_GUIDE.md
+RAG优化.md
+README_API.md
+README_PROJECT.md
+CHANGELOG.md
+docs/CHANGELOG.md
+
 # ===== 对话历史（运行时生成，含用户隐私）=====
-chat_history/
+data/chat_history/
 
 # ===== 上传文件去重记录（运行时生成）=====
-# md5.text 首次提交保留空文件作为模板，后续变更不跟踪
-# 如需忽略本地变更：git update-index --skip-worktree md5.text
+# data/md5.text 首次提交保留空文件作为模板，后续变更不跟踪
+# 如需忽略本地变更：git update-index --skip-worktree data/md5.text
+md5.text
 
 # ===== 评估报告（运行时生成）=====
 eval/eval_report*.md

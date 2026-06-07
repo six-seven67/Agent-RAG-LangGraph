@@ -64,9 +64,9 @@ async def lifespan(app: FastAPI):
 
 # 创建 FastAPI 应用
 app = FastAPI(
-    title="RAG 智能客服系统",
-    description="基于检索增强生成的智能客服 API，支持用户认证、知识库管理和流式对话",
-    version="2.0.0",
+    title="Agent 智能客服系统",
+    description="基于 LangGraph ReAct Agent 的智能客服 API，支持工具调用、知识库检索、流式对话和人工转接",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -112,7 +112,7 @@ async def jwt_blacklist_middleware(request: Request, call_next):
 @app.get("/health", tags=["系统"])
 async def health_check():
     """健康检查端点"""
-    return {"status": "ok", "service": "RAG 智能客服系统", "version": "2.0.0"}
+    return {"status": "ok", "service": "Agent 智能客服系统", "version": "3.0.0"}
 
 
 # ==================== 注册路由 ====================

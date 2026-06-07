@@ -12,7 +12,7 @@ const AuthPage = (() => {
     container.innerHTML = `
       <div class="auth-page">
         <div class="auth-card">
-          <h1>🤖 RAG 智能客服</h1>
+          <h1>🤖 Agent 智能客服</h1>
           <p class="subtitle">登录您的账号</p>
           <form id="login-form">
             <div class="form-group">
@@ -72,7 +72,7 @@ const AuthPage = (() => {
       <div class="auth-page">
         <div class="auth-card">
           <h1>📝 注册新账号</h1>
-          <p class="subtitle">加入 RAG 智能客服系统</p>
+          <p class="subtitle">加入 Agent 智能客服系统</p>
           <form id="register-form">
             <div class="form-group">
               <label class="form-label" for="reg-username">用户名 <span style="color:var(--color-danger)">*</span></label>

@@ -1,5 +1,8 @@
 ﻿# Python 3.10+ 推荐
 # ===== 核心 RAG 依赖（已安装版本）=====
+langgraph>=1.1.0
+langgraph-checkpoint-sqlite>=3.1.0
+aiosqlite>=0.22.0
 langchain-core>=1.4.0
 langchain-community>=0.4.0
 langchain-chroma>=1.1.0

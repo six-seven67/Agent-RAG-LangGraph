@@ -1,10 +1,10 @@
 
 import sys, os, uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.rag_async import AsyncRagService
+from src.rag import AsyncRagService
 import streamlit as st
-from src import config_data as config
-from src.file_history_store import load_history_for_ui
+import src.config as config
+from src.storage import load_history_for_ui
 
 st.title("智能客服")
 st.divider()

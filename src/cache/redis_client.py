@@ -10,7 +10,7 @@ Redis 缓存客户端模块
 
 import redis.asyncio as aioredis
 from redis.asyncio import Redis
-from src import config_data as config
+import src.config as config
 
 # 全局 Redis 连接实例
 _redis: Redis | None = None

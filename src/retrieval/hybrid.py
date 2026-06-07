@@ -15,8 +15,8 @@ from typing import List, Dict
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
-from src.bm25_retriever import BM25Retriever
-from src import config_data as config
+from src.retrieval.bm25 import BM25Retriever
+import src.config as config
 
 
 class HybridRetriever:
@@ -155,7 +155,7 @@ class HybridRetriever:
 if __name__ == "__main__":
     # 简单测试
     from langchain_community.embeddings import DashScopeEmbeddings
-    from src.vector_stores import VectorStoreService
+    from src.retrieval.vector_store import VectorStoreService
 
     embedding = DashScopeEmbeddings(model=config.embedding_model_name)
     vector_service = VectorStoreService(embedding=embedding)

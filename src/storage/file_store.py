@@ -6,8 +6,9 @@ from typing import Sequence
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, message_to_dict, messages_from_dict
 
-# Storage root: project_root/chat_history/
-STORAGE_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chat_history")
+# Storage root: unified data/chat_history/
+import src.config as _config
+STORAGE_ROOT = _config.chat_history_path
 
 
 class FileChatMessageHistory(BaseChatMessageHistory):

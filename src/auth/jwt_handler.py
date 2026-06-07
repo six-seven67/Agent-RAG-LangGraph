@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 
-from src import config_data as config
+import src.config as config
 
 # 时区
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai

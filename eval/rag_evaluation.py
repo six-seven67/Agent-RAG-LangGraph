@@ -43,11 +43,11 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_core.documents import Document
 
-from src.vector_stores import VectorStoreService
-from src.reranker import RerankerService
-from src.bm25_retriever import BM25Retriever
-from src.hybrid_retriever import HybridRetriever
-from src import config_data as config
+from src.retrieval import VectorStoreService
+from src.retrieval import RerankerService
+from src.retrieval import BM25Retriever
+from src.retrieval import HybridRetriever
+import src.config as config
 
 
 # ============================================================================

@@ -11,13 +11,13 @@ RAG (Retrieval-Augmented Generation) 服务模块
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableWithMessageHistory, RunnableLambda
-from src.file_history_store import get_history
-from src.vector_stores import VectorStoreService
-from src.reranker import RerankerService
-from src.bm25_retriever import BM25Retriever
-from src.hybrid_retriever import HybridRetriever
+from src.storage import get_history
+from src.retrieval import VectorStoreService
+from src.retrieval import RerankerService
+from src.retrieval import BM25Retriever
+from src.retrieval import HybridRetriever
 from langchain_community.embeddings import DashScopeEmbeddings
-from src import config_data as config
+import src.config as config
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_models.tongyi import ChatTongyi
 
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     """
     主程序入口，用于测试RAG服务功能
     """
-    from src import config_data as config
+    import src.config as config
     
     # 构建测试用户的会话配置
     session_config = config.build_session_config("test_user")

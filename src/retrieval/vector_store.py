@@ -13,7 +13,7 @@
 
 from langchain_chroma import Chroma
 from langchain_community.embeddings import DashScopeEmbeddings
-from src import config_data as config
+import src.config as config
 
 
 class VectorStoreService(object):

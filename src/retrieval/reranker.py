@@ -11,7 +11,7 @@
 import asyncio
 from langchain_core.documents import Document
 from dashscope.rerank.text_rerank import TextReRank
-from src import config_data as config
+import src.config as config
 
 
 class RerankerService:

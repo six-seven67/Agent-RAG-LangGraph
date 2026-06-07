@@ -99,7 +99,7 @@
     await initAuth();
     Router.start();
     updateNavActive();
-    console.log('🚀 RAG 智能客服系统前端已启动');
+    console.log('🚀 Agent 智能客服系统前端已启动 (v3.0.0)');
     console.log('   Base URL: http://localhost:8000');
     console.log('   当前路由:', isAuthenticated() ? '已登录' : '未登录');
   }

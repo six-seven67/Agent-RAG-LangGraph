@@ -5,9 +5,10 @@ load_dotenv()
 
 # ===== 路径配置 =====
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-md5_path = os.path.join(_BASE_DIR, "md5.text")
-chroma_path = os.path.join(_BASE_DIR, "chroma.db")
-chat_history_path = os.path.join(_BASE_DIR, "chat_history")
+_DATA_DIR = os.path.join(_BASE_DIR, "data")
+md5_path = os.path.join(_DATA_DIR, "md5.text")
+chroma_path = os.path.join(_DATA_DIR, "chroma")
+chat_history_path = os.path.join(_DATA_DIR, "chat_history")
 
 collection_name = "rag"
 collection_prefix = "rag_user"  # 用户隔离：每个用户的 collection 名为 rag_user_{user_id}
@@ -39,6 +40,14 @@ query_rewrite_model_name = "qwen3-max"
 # embedding & chat
 embedding_model_name = "text-embedding-v4"
 chat_model_name = "qwen3-max"
+
+# ===== Agent 配置 =====
+# Agent 模式：true = Agent（工具调用 + 自主决策），false = 传统 RAG 管线
+agent_mode_enabled = os.getenv("AGENT_MODE", "true").lower() == "true"
+# Agent 最大迭代次数（防止无限循环）
+agent_max_iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
+# Agent 使用的工具列表（逗号分隔）
+agent_tools = os.getenv("AGENT_TOOLS", "search_knowledge_base,lookup_faq,escalate_to_human").split(",")
 
 # ===== MySQL 数据库配置 =====
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")

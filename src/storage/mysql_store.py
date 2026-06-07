@@ -171,7 +171,7 @@ def get_history(session_id: str, user_id: int | None = None):
     if STORAGE_BACKEND == "mysql" and user_id is not None:
         return MySQLChatMessageHistory(user_id=user_id, session_id=session_id)
     else:
-        from src.file_history_store import FileChatMessageHistory
+        from src.storage.file_store import FileChatMessageHistory
         return FileChatMessageHistory(session_id)
 
 
@@ -211,5 +211,5 @@ def load_history_for_ui(session_id: str, user_id: int | None = None) -> list[dic
         except RuntimeError:
             return asyncio.run(_load())
     else:
-        from src.file_history_store import load_history_for_ui as file_load
+        from src.storage.file_store import load_history_for_ui as file_load
         return file_load(session_id)

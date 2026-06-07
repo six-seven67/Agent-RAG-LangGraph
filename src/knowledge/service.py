@@ -16,10 +16,10 @@ import hashlib
 import os
 
 from langchain_community.embeddings import DashScopeEmbeddings
-from src import config_data as config
+import src.config as config
 from langchain_chroma import Chroma
 from datetime import datetime
-from src.semantic_splitter import split_by_structure
+from src.knowledge.splitter import split_by_structure
 
 
 def check_md5(md5_str: str):
