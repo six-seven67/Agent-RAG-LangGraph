@@ -1,8 +1,8 @@
-# 环境变量（含 API Key，切勿提交）
+# ===== 环境变量（含 API Key，切勿提交）=====
 .env
 .env.local
 
-# Python
+# ===== Python =====
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,19 +13,32 @@ venv/
 dist/
 build/
 
-# 向量库与本地生成数据（体积大、可重建）
+# ===== 向量库与本地数据（体积大、可重建）=====
 chroma.db/
-chroma.db
 *.sqlite3
 
-# Streamlit
+# ===== 对话历史（运行时生成，含用户隐私）=====
+chat_history/
+
+# ===== 上传文件去重记录（运行时生成）=====
+# md5.text 首次提交保留空文件作为模板，后续变更不跟踪
+# 如需忽略本地变更：git update-index --skip-worktree md5.text
+
+# ===== 评估报告（运行时生成）=====
+eval/eval_report*.md
+
+# ===== Streamlit =====
 .streamlit/secrets.toml
 
-# IDE
+# ===== IDE =====
 .idea/
 .vscode/
 *.swp
+*.swo
 
-# OS
+# ===== OS =====
 .DS_Store
 Thumbs.db
+
+# ===== 依赖安装残留 =====
+=*

@@ -1,3 +1,5 @@
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """
 基于Streamlit的知识库文件上传Web服务
 
@@ -11,7 +13,7 @@
 """
 
 import streamlit as st
-from knowledge_base import KnowledgeBaseService
+from src.knowledge_base import KnowledgeBaseService
 
 
 # ==================== 页面配置 ====================

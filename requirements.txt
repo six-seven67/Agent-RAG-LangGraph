@@ -1,9 +1,37 @@
-# Python 3.10+ 推荐
-langchain-core>=0.3.0
-langchain-community>=0.3.0
-langchain-chroma>=0.1.0
-langchain-text-splitters>=0.3.0
-chromadb>=0.5.0
-streamlit>=1.40.0
-dashscope>=1.20.0
+﻿# Python 3.10+ 推荐
+# ===== 核心 RAG 依赖（已安装版本）=====
+langchain-core>=1.4.0
+langchain-community>=0.4.0
+langchain-chroma>=1.1.0
+langchain-text-splitters>=1.1.0
+chromadb>=1.5.0
+streamlit>=1.50.0
+dashscope>=1.25.0
 python-dotenv>=1.0.0
+jieba>=0.42.1
+
+# ===== FastAPI Web 框架（已安装）=====
+fastapi>=0.135.0
+uvicorn[standard]>=0.44.0
+python-multipart>=0.0.26
+sse-starlette>=3.3.0
+starlette>=1.0.0
+
+# ===== 数据库（已安装）=====
+sqlalchemy[asyncio]>=2.0.49
+aiomysql>=0.3.0
+PyMySQL>=1.1.0
+
+# ===== Redis 缓存（已安装）=====
+redis>=7.4.0
+
+# ===== JWT 认证（已安装）=====
+PyJWT>=2.12.0
+bcrypt>=5.0.0
+cryptography>=46.0.0
+
+# ===== 数据验证（已安装）=====
+pydantic>=2.11.0
+
+# ===== 数据库迁移（需新增安装）=====
+alembic>=1.13.0
