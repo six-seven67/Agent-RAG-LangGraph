@@ -10,6 +10,66 @@ import asyncio
 from langchain_core.tools import tool
 
 
+def _clean_chinese_text(text: str) -> str:
+    """清理中文文本的常见排版问题。
+
+    修复文档切分或 AI 输出中的非法换行：
+    - 《...》跨行 → 合并为一行
+    - 中文标点附近非法换行 → 合并
+    - 中文汉字间断行 → 合并
+    - 数字与中文单位间断行 → 合并
+    """
+    if not text:
+        return text
+
+    import re
+
+    # ---- Pass 1: 配对标点内换行 ----
+    # 《...》跨行
+    text = re.sub(r'《([^》\n]*)\n([^》]*)》', r'《\1\2》', text)
+    text = re.sub(r'《([^》]*)\n', r'《\1', text)
+    text = re.sub(r'\n([^《]*)》', r'\1》', text)
+
+    # （...）跨行
+    text = re.sub(r'（([^）\n]*)\n([^）]*)）', r'（\1\2）', text)
+    text = re.sub(r'（([^）]*)\n', r'（\1', text)
+    text = re.sub(r'\n([^（]*)）', r'\1）', text)
+
+    # "...", 跨行
+    text = re.sub(r'“([^”\n]*)\n([^”]*)”', r'“\1\2”', text)
+    text = re.sub(r'“([^”]*)\n', r'“\1', text)
+    text = re.sub(r'\n([^“]*)”', r'\1”', text)
+
+    # ---- Pass 2: 中文标点附近的非法换行 ----
+    # 合并中文标点后的换行，但保留接结构化内容时的合理段落分隔
+    text = re.sub(r'([，、；：。！？])\s*\n\s*', r'\1', text)
+    text = re.sub(
+        r'([。！？])\n(?!\s*(?:[-*\d]|（|[A-Z]|[一二三四五六七八九十]、|【))',
+        r'\1', text
+    )
+
+    # ---- Pass 3: 标点边界粘连 ----
+    text = re.sub(r'([^\n\s])\s*\n\s*([《〈「『（("])', r'\1\2', text)
+    text = re.sub(r'([》〉」』）)"\'])\s*\n\s*([^\n\s])', r'\1\2', text)
+
+    # ---- Pass 4: 中文汉字之间的断行 ----
+    text = re.sub(r'([一-鿿])\s*\n\s*([一-鿿])', r'\1\2', text)
+
+    # ---- Pass 5: 数字被断开 ----
+    text = re.sub(r'(\d)\s*\n\s*([一-鿿])', r'\1\2', text)
+    text = re.sub(r'([一-鿿])\s*\n\s*(\d)', r'\1\2', text)
+
+    # ---- Pass 6: 冒号后的断行 ----
+    text = re.sub(r'([：:])\s*\n\s*', r'\1', text)
+
+    # ---- Pass 7: 清理残留 ----
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'^[ \t]+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'[ \t]+$', '', text, flags=re.MULTILINE)
+
+    return text
+
+
 def make_search_knowledge_base(
     query_rewriter,
     hybrid_retriever,
@@ -28,6 +88,7 @@ def make_search_knowledge_base(
     Returns:
         配置好的 search_knowledge_base 工具
     """
+
     @tool
     async def search_knowledge_base(query: str) -> str:
         """检索知识库获取与用户问题相关的文档资料。
@@ -68,10 +129,12 @@ def make_search_knowledge_base(
 
             if parent and parent not in seen_parents:
                 seen_parents.add(parent)
+                # 清理中文排版问题
+                parent = _clean_chinese_text(parent)
                 header = f"【{title}】" if title else ""
                 parts.append(f"{header}\n{parent}")
             elif not parent:
-                parts.append(doc.page_content)
+                parts.append(_clean_chinese_text(doc.page_content))
 
         if not parts:
             return "无相关参考资料"

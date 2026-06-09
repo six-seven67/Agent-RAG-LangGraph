@@ -41,13 +41,10 @@ query_rewrite_model_name = "qwen3-max"
 embedding_model_name = "text-embedding-v4"
 chat_model_name = "qwen3-max"
 
-# ===== Agent 配置 =====
-# Agent 模式：true = Agent（工具调用 + 自主决策），false = 传统 RAG 管线
-agent_mode_enabled = os.getenv("AGENT_MODE", "true").lower() == "true"
-# Agent 最大迭代次数（防止无限循环）
-agent_max_iterations = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
-# Agent 使用的工具列表（逗号分隔）
-agent_tools = os.getenv("AGENT_TOOLS", "search_knowledge_base,lookup_faq,escalate_to_human").split(",")
+# ===== Agent 后端选择（v3.2.0）=====
+# "custom" = 混合架构 StateGraph（classify → summarize → agent ⇄ tools）
+# "legacy" = langchain.agents.create_agent（向后兼容）
+agent_backend = os.getenv("AGENT_BACKEND", "custom").lower()
 
 # ===== MySQL 数据库配置 =====
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -67,6 +64,25 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-to-a-random-secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 JWT_REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+
+# ===== Agent 对话总结（v3.2.0: 轮次触发）=====
+# 触发总结的对话轮数阈值（每个用户消息 = 1 轮）
+agent_summary_trigger_rounds = int(os.getenv("AGENT_SUMMARY_TRIGGER_ROUNDS", "6"))
+# 两次总结之间的最小轮数间隔（避免每轮重复总结）
+agent_summary_min_interval_rounds = int(os.getenv("AGENT_SUMMARY_MIN_INTERVAL_ROUNDS", "3"))
+# 保留最近的消息条数（不被压缩）
+agent_summary_keep_recent = int(os.getenv("AGENT_SUMMARY_KEEP_RECENT", "6"))
+# 摘要最大字符数
+agent_summary_max_chars = int(os.getenv("AGENT_SUMMARY_MAX_CHARS", "200"))
+
+# ===== Agent 意图分类（classify_intent 规则匹配）=====
+# 是否启用规则匹配快速路由（关闭则所有请求走 agent LLM 决策）
+agent_classify_enabled = os.getenv("AGENT_CLASSIFY_ENABLED", "true").lower() == "true"
+
+# ===== Web Search =====
+web_search_enabled = os.getenv("WEB_SEARCH_ENABLED", "true").lower() == "true"
+# TAVILY_API_KEY 直接在 os.getenv 中读取，不在此暴露默认值
 
 
 def build_session_config(session_id: str, user_id: int = None) -> dict:

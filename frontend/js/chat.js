@@ -250,10 +250,22 @@ const ChatPage = (() => {
         refreshToolStatuses();
         scrollToBottom();
       },
+      onSummarize() {
+        toolStatuses.push({ type: 'summarize', name: 'summarize', time: new Date().toISOString() });
+        refreshToolStatuses();
+        scrollToBottom();
+      },
+      onSessionEnd() {
+        toolStatuses.push({ type: 'session_end', name: 'session_end', time: new Date().toISOString() });
+        refreshToolStatuses();
+        scrollToBottom();
+      },
       onDone(fullAnswer) {
         hideTypingIndicator(aiMsgIndex);
-        messages[aiMsgIndex].content = fullAnswer;
-        updateMessageBubble(aiMsgIndex, fullAnswer);
+        // 格式化输出（结构化换行、层级缩进）
+        const formatted = formatAnswerOutput(fullAnswer);
+        messages[aiMsgIndex].content = formatted;
+        updateMessageBubble(aiMsgIndex, formatted);
         isStreaming = false;
         sendBtn.disabled = !inputEl.value.trim();
 
@@ -293,8 +305,19 @@ const ChatPage = (() => {
       'search_knowledge_base': '🔍 正在检索知识库...',
       'lookup_faq': '📋 正在查找常见问题...',
       'escalate_to_human': '👨‍💼 正在转接人工客服...',
+      'web_search': '🌐 正在联网搜索...',
     };
     return labels[toolName] || `⚙️ 正在执行: ${toolName}...`;
+  }
+
+  function getToolDoneLabel(toolName) {
+    const labels = {
+      'search_knowledge_base': '🔍 检索知识库完成',
+      'lookup_faq': '📋 常见问题查找完成',
+      'escalate_to_human': '👨‍💼 已转接人工客服',
+      'web_search': '🌐 联网搜索完成',
+    };
+    return labels[toolName] || `✅ 已完成: ${toolName}`;
   }
 
   /* ---- Render Messages ---- */
@@ -310,8 +333,6 @@ const ChatPage = (() => {
       return;
     }
 
-    // Build message HTML rows, interleaving tool statuses where they
-    // appear chronologically (right before the assistant message)
     let html = '';
 
     for (let i = 0; i < messages.length; i++) {
@@ -319,24 +340,37 @@ const ChatPage = (() => {
       const time = m.created_at ? formatTime(m.created_at) : '';
       const roleIcon = m.role === 'user' ? '👤' : '🤖';
 
+      // 用户消息：纯文本转义；AI 消息：Markdown 渲染
+      const renderedContent = m.role === 'assistant' && m.content
+        ? formatMarkdown(m.content)
+        : (m.content ? escapeHtml(m.content) : '');
+
       html += `
         <div class="message-row ${m.role}">
           <div class="message-avatar ${m.role}">${roleIcon}</div>
           <div>
-            <div class="message-bubble" id="msg-${i}">${m.content ? escapeHtml(m.content) : '<span class="typing-indicator"><span></span><span></span><span></span></span>'}</div>
+            <div class="message-bubble" id="msg-${i}">${m.content ? renderedContent : '<span class="typing-indicator"><span></span><span></span><span></span></span>'}</div>
             ${time ? `<div class="message-time">${time}</div>` : ''}
           </div>
         </div>
       `;
 
-      // After each assistant message, show tool statuses that belong here
-      // (tool statuses interleave chronologically — show them after the
-      //  AI message that triggered them)
-      if (m.role === 'assistant' && i === messages.length - 1 && toolStatuses.length > 0 && isStreaming) {
+      // 在最后一条 AI 消息后插入工具状态卡片
+      if (m.role === 'assistant' && i === messages.length - 1 && toolStatuses.length > 0) {
         for (const ts of toolStatuses) {
+          // 独立事件类型
+          if (ts.type === 'summarize') {
+            html += `<div class="tool-status tool-info"><span class="tool-dot"></span><span>📝 对话历史已自动总结</span></div>`;
+            continue;
+          }
+          if (ts.type === 'session_end') {
+            html += `<div class="tool-status tool-info"><span class="tool-dot"></span><span>📋 会话总结已生成</span></div>`;
+            continue;
+          }
+          // 工具执行状态
           const cls = ts.type === 'tool_start' ? 'tool-start' : 'tool-end';
           const icon = ts.type === 'tool_start' ? '⏳' : '✅';
-          const label = ts.type === 'tool_start' ? ts.label : `已完成: ${getToolLabel(ts.name).replace('正在', '')}`;
+          const label = ts.type === 'tool_start' ? ts.label : getToolDoneLabel(ts.name);
           html += `
             <div class="tool-status ${cls}">
               <span class="tool-dot"></span>
@@ -348,13 +382,78 @@ const ChatPage = (() => {
     }
 
     messagesEl.innerHTML = html;
+
+    // 给代码块添加复制按钮
+    messagesEl.querySelectorAll('.code-block').forEach(block => {
+      if (block.querySelector('.copy-btn')) return;
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = '📋 复制';
+      btn.addEventListener('click', async () => {
+        const code = block.querySelector('code');
+        const text = code ? code.textContent : '';
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = '✓ 已复制';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = '📋 复制';
+            btn.classList.remove('copied');
+          }, 2000);
+        } catch {
+          // Fallback for older browsers
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          btn.textContent = '✓ 已复制';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = '📋 复制';
+            btn.classList.remove('copied');
+          }, 2000);
+        }
+      });
+      block.appendChild(btn);
+    });
   }
 
   function updateMessageBubble(index, content) {
     const bubble = document.getElementById(`msg-${index}`);
     if (bubble) {
-      bubble.textContent = content;
+      bubble.innerHTML = formatMarkdown(content);
+      // 给代码块添加复制按钮（仅流式更新结束后有完整代码块）
+      bubble.querySelectorAll('.code-block').forEach(block => {
+        if (block.querySelector('.copy-btn')) return;
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.textContent = '📋 复制';
+        btn.addEventListener('click', () => copyCodeBlock(btn, block));
+        block.appendChild(btn);
+      });
     }
+  }
+
+  function copyCodeBlock(btn, block) {
+    const code = block.querySelector('code');
+    const text = code ? code.textContent : '';
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = '✓ 已复制';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = '📋 复制'; btn.classList.remove('copied'); }, 2000);
+    }).catch(() => {
+      // Fallback
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+      btn.textContent = '✓ 已复制';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = '📋 复制'; btn.classList.remove('copied'); }, 2000);
+    });
   }
 
   function showTypingIndicator(index) {
@@ -367,7 +466,7 @@ const ChatPage = (() => {
   function hideTypingIndicator(index) {
     const bubble = document.getElementById(`msg-${index}`);
     if (bubble && bubble.querySelector('.typing-indicator')) {
-      bubble.textContent = '';
+      bubble.innerHTML = '';
     }
   }
 
@@ -388,6 +487,240 @@ const ChatPage = (() => {
   function escapeAttr(str) {
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /**
+   * 轻量 Markdown → HTML 渲染器
+   *
+   * 支持的语法:
+   *   **粗体**  *斜体*  `行内代码`
+   *   ### 标题  (h3~h6)
+   *   - 无序列表  1. 有序列表
+   *   > 引用块
+   *   --- 分隔线
+   *   | 表格 |
+   *   URL 自动链接
+   */
+  function formatMarkdown(text) {
+    if (!text) return '';
+
+    // ---- Pre-phase: 中文排版清理 ----
+    // 修复非法换行：中文标点对内部 / 标点与文字之间不应有换行
+    let html = cleanChineseText(text);
+
+    // ---- Phase 0: 先转义 HTML（保护用户输入）----
+    html = escapeHtml(html);
+
+    // ---- Phase 1: 代码块（``` ... ```）----
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
+      return `<div class="code-block">${langLabel}<pre><code>${code.trim()}</code></pre></div>`;
+    });
+
+    // ---- Phase 2: 行内代码（`...`）----
+    html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+
+    // ---- Phase 3: 粗体 + 斜体 ----
+    // **粗体** — 允许跨行、前后空格
+    html = html.replace(/\*\*([\s\S]*?)\*\*/g, '<strong>$1</strong>');
+    // *斜体* — 不匹配 ** 的情况
+    html = html.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+
+    // ---- Phase 4: 表格 ----
+    html = html.replace(/\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/g, (_, headerRow, bodyRows) => {
+      const headers = headerRow.split('|').map(h => h.trim()).filter(Boolean);
+      const thHtml = headers.map(h => `<th>${h}</th>`).join('');
+      const rows = bodyRows.trim().split('\n');
+      const trHtml = rows.map(row => {
+        const cells = row.split('|').map(c => c.trim()).filter(Boolean);
+        return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
+      }).join('');
+      return `<div class="table-wrapper"><table><thead><tr>${thHtml}</tr></thead><tbody>${trHtml}</tbody></table></div>`;
+    });
+
+    // ---- Phase 5: 标题（## ~ ######，空格可选）----
+    html = html.replace(/^######\s?(.+)$/gm, '<h6>$1</h6>');
+    html = html.replace(/^#####\s?(.+)$/gm, '<h5>$1</h5>');
+    html = html.replace(/^####\s?(.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^###\s?(.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^##\s?(.+)$/gm, '<h3>$1</h3>');  // ## → h3（统一处理）
+
+    // ---- Phase 6: 无序列表（- 或 *，允许 0~N 空格缩进）----
+    html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+    // ---- Phase 7: 有序列表 ----
+    html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, (match) => {
+      if (match.startsWith('<ul>')) return match;
+      return `<ol>${match}</ol>`;
+    });
+
+    // ---- Phase 8: 引用块 ----
+    html = html.replace(/^&gt; (.+)$/gm, '<blockquote><p>$1</p></blockquote>');
+    html = html.replace(/<\/blockquote>\n<blockquote>/g, '\n');
+
+    // ---- Phase 9: 分隔线 ----
+    html = html.replace(/^(---|\*\*\*|___)$/gm, '<hr>');
+
+    // ---- Phase 10: URL 自动链接 ----
+    html = html.replace(
+      /(https?:\/\/[^\s<>"']+)/g,
+      '<a href="$1" target="_blank" rel="noopener">$1</a>'
+    );
+
+    // ---- Phase 11: 换行处理 ----
+    html = html.replace(/\n\n+/g, '</p><p>');
+    html = html.replace(/\n/g, '<br>');
+    html = '<p>' + html + '</p>';
+    html = html.replace(/<p><\/p>/g, '');
+    html = html.replace(/<p>(\s*<br>\s*)+<\/p>/g, '');
+    html = html.replace(/<ul>\s*<\/ul>/g, '');
+    html = html.replace(/<ol>\s*<\/ol>/g, '');
+
+    // ---- Phase 12: 结构化段落包裹 ----
+    // 将 【核心结论】【补充提醒】【信息来源】 包裹为独立样式块
+    // 使用 lookahead 确定每个段落的结束边界
+    html = html.replace(
+      /<p>【核心结论】([\s\S]*?)(?=<p>【补充提醒】|<p>【信息来源】|$)/,
+      '<div class="section-core"><strong>【核心结论】</strong>$1</div>'
+    );
+    html = html.replace(
+      /<p>【补充提醒】([\s\S]*?)(?=<p>【信息来源】|$)/,
+      '<div class="section-reminder"><strong>【补充提醒】</strong>$1</div>'
+    );
+    html = html.replace(
+      /<p>【信息来源】([\s\S]*?)$/,
+      '<div class="section-source"><strong>【信息来源】</strong>$1</div>'
+    );
+
+    return html;
+  }
+
+  /**
+   * 中文排版清理 — 修复非法换行
+   *
+   * 处理 AI 输出或检索结果中的中文排版问题。
+   * 核心原则：中文段落内不应有换行，只有段落之间才允许。
+   */
+  function cleanChineseText(text) {
+    // ---- Pass 1: 配对标点内换行（《》""（）等）----
+    // 匹配 《...》 跨越多行 → 合并为一行
+    text = text.replace(/《([^》\n]*)\n([^》]*)》/g, '《$1$2》');
+    text = text.replace(/《([^》]*)\n/g, '《$1');
+    text = text.replace(/\n([^《]*)》/g, '$1》');
+
+    // （...）跨行
+    text = text.replace(/（([^）\n]*)\n([^）]*)）/g, '（$1$2）');
+    text = text.replace(/（([^）]*)\n/g, '（$1');
+    text = text.replace(/\n([^（]*)）/g, '$1）');
+
+    // "..." 跨行
+    text = text.replace(/“([^”\n]*)\n([^”]*)”/g, '“$1$2”');
+    text = text.replace(/“([^”]*)\n/g, '“$1');
+    text = text.replace(/\n([^“]*)”/g, '$1”');
+
+    // ---- Pass 2: 中文标点附近的非法换行 ----
+    // 中文标点后紧跟换行 → 合并（逗号、顿号、分号、冒号、句号后的碎片）
+    // 但保留句号/问号/感叹号后接结构化内容时的合理段落分隔：
+    //   - 中文章节标题：一、二、三、…十、
+    //   - 结构标签：【核心结论】【补充提醒】【信息来源】
+    //   - 列表项：- * 1. 或括号标题（
+    text = text.replace(/([，、；：。！？])\s*\n\s*/g, '$1');
+    text = text.replace(
+      /([。！？])\n(?!\s*(?:[-*\d]|（|[A-Z]|[一二三四五六七八九十]、|【))/g,
+      '$1'
+    );
+
+    // ---- Pass 3: 书名号/括号边界粘连 ----
+    text = text.replace(/([^\n\s])\s*\n\s*([《〈「『（("])/g, '$1$2');
+    text = text.replace(/([》〉」』）)"'])\s*\n\s*([^\n\s])/g, '$1$2');
+
+    // ---- Pass 4: 中文汉字之间的断行 ----
+    // 行末中文字符 + 换行 + 行首中文字符 → 连接（非法断词）
+    text = text.replace(/([一-鿿])\s*\n\s*([一-鿿])/g, '$1$2');
+
+    // ---- Pass 5: 数字/字母被断开 ----
+    // 数字+换行+中文字符 → 连接（如 "123\n天" → "123天"）
+    text = text.replace(/(\d)\s*\n\s*([一-鿿])/g, '$1$2');
+    // 中文字符+换行+数字 → 连接
+    text = text.replace(/([一-鿿])\s*\n\s*(\d)/g, '$1$2');
+
+    // ---- Pass 6: 标题标记后的断行 ----
+    // "依据来源：\n《X》" → "依据来源：《X》"
+    text = text.replace(/([：:])\s*\n\s*/g, '$1');
+
+    // ---- Pass 7: 清理残留 ----
+    text = text.replace(/[ \t]{2,}/g, ' ');
+    text = text.replace(/^[ \t]+/gm, '');
+    text = text.replace(/[ \t]+$/gm, '');
+
+    return text;
+  }
+
+  /**
+   * 对 AI 输出进行结构化格式化后处理。
+   *
+   * 确保答案遵循统一的四段式结构：
+   * 【核心结论】→ 分层详解 → 【补充提醒】→ 【信息来源】
+   *
+   * 处理策略（按顺序）：
+   * 1. 【核心结论】标签规范化
+   * 2. 第一层标题（一、二、…十、）前插入空行
+   * 3. 第二层标题（（一）（二）…）前换行
+   * 4. 第三层要点（1. 2. 3. ...）前换行
+   * 5. 【补充提醒】【信息来源】前插入空行
+   * 6. 清理多余空行
+   */
+  function formatAnswerOutput(text) {
+    if (!text) return text;
+
+    // ---- Step 1: 预处理 ----
+    text = text.trim();
+
+    // ---- Step 2: 【核心结论】规范化 ----
+    // 确保 "【核心结论】" 后换行
+    text = text.replace(/【核心结论】\s*/g, '【核心结论】\n');
+    // 确保 【核心结论】... 段落与后续有空行
+    text = text.replace(
+      /(【核心结论】\n[^\n]+?)\n?([一二三四五六七八九十]、|（[一二三四五六七八九十\d]+）)/g,
+      '$1\n\n$2'
+    );
+
+    // ---- Step 3: 第一层标题（一、二、…十、）前空行 ----
+    text = text.replace(
+      /([。！？\n])([一二三四五六七八九十])、(?=\S)/g,
+      '$1\n\n$2、'
+    );
+    // 行首的 "一、" 前保证有空行
+    text = text.replace(/\n([一二三四五六七八九十])、(?=\S)/g, '\n\n$1、');
+    // 防止 【核心结论】 后紧跟 "一、"
+    text = text.replace(
+      /(【核心结论】\n[^\n]+?)\n([一二三四五六七八九十])、/g,
+      '$1\n\n$2、'
+    );
+
+    // ---- Step 4: 第二层标题（（一）（二）…）前换行 ----
+    text = text.replace(/([^（\n])(（[一二三四五六七八九十\d]+）)/g, '$1\n$2');
+    text = text.replace(/(?<!\n)(（[一二三四五六七八九十\d]+）)/g, '\n$1');
+
+    // ---- Step 5: 第三层要点（1. 2. 3. ...）前换行 ----
+    text = text.replace(/([^0-9\n])(\d+)\.\s*(?=[^\d])/g, '$1\n$2. ');
+    text = text.replace(/(?<!\n)(\d+\.\s)/g, '\n$1');
+
+    // ---- Step 6: 【补充提醒】【信息来源】前空行 ----
+    text = text.replace(/([。！？\n])(【补充提醒】)/g, '$1\n\n$2');
+    text = text.replace(/([。！？\n])(【信息来源】)/g, '$1\n\n$2');
+    text = text.replace(/(?<!\n)(【补充提醒】)/g, '\n\n$1');
+    text = text.replace(/(?<!\n)(【信息来源】)/g, '\n\n$1');
+
+    // ---- Step 7: 清理多余空行 ----
+    text = text.replace(/\n{3,}/g, '\n\n');
+    // 移除行首行尾多余空格
+    text = text.replace(/^[ \t]+/gm, '');
+    text = text.replace(/[ \t]+$/gm, '');
+
+    return text;
   }
 
   function formatTime(isoString) {

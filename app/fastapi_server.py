@@ -25,7 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.db.database import init_db, engine
-from src.cache.redis_client import get_redis, close_redis
+from src.cache.redis_client import get_redis, close_redis, ping_redis
+from src.api.chat import cleanup_agent_services
 
 # 导入 API 路由
 from src.api.auth import router as auth_router
@@ -48,11 +49,19 @@ async def lifespan(app: FastAPI):
 
     print("[FastAPI] 正在连接 Redis...")
     await get_redis()
-    print("[FastAPI] Redis 连接成功")
+    redis_ok = await ping_redis()
+    if redis_ok:
+        print("[FastAPI] Redis 连接成功 ✓")
+    else:
+        print("[FastAPI] ⚠️  Redis 连接失败！请检查 Redis 服务是否运行")
+        print("[FastAPI] ⚠️  系统将继续启动，但 Redis 相关功能不可用（黑名单/缓存/限流）")
 
     yield  # 应用运行中
 
     # ===== 关闭 =====
+    print("[FastAPI] 正在关闭 Agent 服务...")
+    await cleanup_agent_services()
+
     print("[FastAPI] 正在关闭 Redis 连接...")
     await close_redis()
 

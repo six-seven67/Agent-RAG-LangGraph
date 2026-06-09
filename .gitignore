@@ -17,27 +17,27 @@ build/
 data/chroma/
 *.sqlite3
 
-# ===== 文档（仅 README.md 上传）=====
-GIT_GUIDE.md
+# ===== 本地笔记（不上传）=====
 RAG优化.md
-README_API.md
-README_PROJECT.md
-CHANGELOG.md
-docs/CHANGELOG.md
 
 # ===== 对话历史（运行时生成，含用户隐私）=====
 data/chat_history/
 
 # ===== 上传文件去重记录（运行时生成）=====
-# data/md5.text 首次提交保留空文件作为模板，后续变更不跟踪
-# 如需忽略本地变更：git update-index --skip-worktree data/md5.text
+data/md5.text
 md5.text
+
+# ===== 临时文件 =====
+*tempfile_*.mermaid
 
 # ===== 评估报告（运行时生成）=====
 eval/eval_report*.md
 
 # ===== Streamlit =====
 .streamlit/secrets.toml
+
+# ===== 测试/临时脚本 =====
+test_langgraph_improvement.py
 
 # ===== IDE =====
 .idea/

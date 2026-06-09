@@ -154,11 +154,13 @@ const API = (() => {
    *   onToken(token, fullAnswer)    — 逐字 token
    *   onToolStart({tools})          — Agent 开始调用工具
    *   onToolEnd({tool, result})     — 工具执行完成
+   *   onSummarize()                 — 对话历史已自动总结
+   *   onSessionEnd()                — 会话结束总结已生成
    *   onThinking()                  — Agent 思考中
    *   onDone(fullAnswer)            — 流结束
    *   onError(err)                  — 发生错误
    */
-  async function sendMessageStream(query, sessionId, { onToken, onToolStart, onToolEnd, onThinking, onDone, onError } = {}) {
+  async function sendMessageStream(query, sessionId, { onToken, onToolStart, onToolEnd, onSummarize, onSessionEnd, onThinking, onDone, onError } = {}) {
     const params = new URLSearchParams({ query });
     if (sessionId) params.append('session_id', sessionId);
 
@@ -235,6 +237,10 @@ const API = (() => {
                 const toolData = JSON.parse(data);
                 if (onToolEnd) onToolEnd(toolData);
               } catch { /* ignore parse errors */ }
+            } else if (eventType === 'summarize') {
+              if (onSummarize) onSummarize();
+            } else if (eventType === 'session_end') {
+              if (onSessionEnd) onSessionEnd();
             } else if (eventType === 'thinking') {
               if (onThinking) onThinking();
             }
