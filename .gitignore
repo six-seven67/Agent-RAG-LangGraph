@@ -30,6 +30,9 @@ md5.text
 # ===== 临时文件 =====
 *tempfile_*.mermaid
 
+# ===== 项目文档（仅 README.md 上传）=====
+docs/
+
 # ===== 评估报告（运行时生成）=====
 eval/eval_report*.md
 
