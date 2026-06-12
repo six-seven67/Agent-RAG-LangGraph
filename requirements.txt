@@ -41,3 +41,8 @@ alembic>=1.13.0
 
 # ===== 联网搜索（v3.1.0）=====
 tavily-python>=0.5.0
+
+# ===== 文档解析（v3.3.0）=====
+pypdf>=6.0.0
+python-docx>=1.0.0
+openpyxl>=3.0.0

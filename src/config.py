@@ -9,13 +9,19 @@ _DATA_DIR = os.path.join(_BASE_DIR, "data")
 md5_path = os.path.join(_DATA_DIR, "md5.text")
 chroma_path = os.path.join(_DATA_DIR, "chroma")
 chat_history_path = os.path.join(_DATA_DIR, "chat_history")
+upload_dir = os.path.join(_DATA_DIR, "uploads")  # 用户上传原文件保存目录
 
 collection_name = "rag"
 collection_prefix = "rag_user"  # 用户隔离：每个用户的 collection 名为 rag_user_{user_id}
 
-# spliter
-chunk_size = 1000
-chunk_overlap = 100
+# spliter — Parent-Child 语义分块
+# Parent: 较大语义块，提供完整上下文给 LLM 生成回答
+# Child:  较小粒度的检索单元，用于向量相似度精确匹配
+# 检索时用 Child 匹配，返回时带上 Parent 的完整内容
+parent_chunk_size = 2000     # Parent 块大小（上下文窗口）
+parent_chunk_overlap = 200   # Parent 块重叠
+child_chunk_size = 500       # Child 块大小（检索精度）
+child_chunk_overlap = 50     # Child 块重叠
 separators = ["\n\n", "\n", ".", "!", "?", "。", "，", "；", " ", ""]
 max_split_char_number = 1000
 

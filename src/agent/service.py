@@ -95,35 +95,51 @@ class AgentService:
     - 会话结束总结：用户结束时生成全局摘要
 
     每个用户使用独立的 SQLite 数据库文件 + Chroma collection，实现用户隔离。
+    
+    设计原因：
+    - 采用LangGraph的StateGraph而非简单串行结构，通过条件路由实现动态流程控制
+    - 包含循环机制（如检索质量差时自动重试），提升系统鲁棒性
+    - 根据问题类型（闲聊/FAQ/知识问答）分流处理，优化响应效率
+    - 使用用户隔离确保数据安全性和个性化体验
     """
 
     def __init__(self, user_id: int = None):
-        """初始化 Agent 服务（轻量级，检索组件延迟加载）。"""
+        """初始化 Agent 服务（轻量级，检索组件延迟加载）。
+        
+        设计原因：
+        - 采用延迟加载模式，避免不必要的资源消耗
+        - 用户ID用于实现数据隔离和个性化服务
+        - 初始化核心LLM模型，其他组件按需加载以优化启动性能
+        """
         self.user_id = user_id
         logger.info("初始化 AgentService（user_id=%s, backend=%s）", user_id, config.agent_backend)
 
         # ---- 用户隔离 ----
+        # 为每个用户创建独立的集合名称，确保知识库数据隔离
         self._collection_name = None
         if user_id is not None:
             self._collection_name = config.get_user_collection_name(user_id)
 
         # ---- LLM（立即初始化）----
+        # 聊天模型是核心组件，需要立即初始化以支持基本对话功能
         self.chat_model = ChatTongyi(
             model=config.chat_model_name,
             streaming=True,
         )
 
         # ---- 延迟加载的组件 ----
-        self._summary_model = None
-        self._vector_service = None
-        self._hybrid_retriever = None
-        self._reranker = None
-        self._query_rewriter = None
-        self._search_tool = None
-        self._tools = None
-        self._web_search_tool = make_web_search()
+        # 以下组件在首次使用时才初始化，减少内存占用和启动时间
+        self._summary_model = None  # 摘要生成专用模型
+        self._vector_service = None  # 向量存储服务
+        self._hybrid_retriever = None  # 混合检索器（向量+BM25）
+        self._reranker = None  # 重排序服务
+        self._query_rewriter = None  # 查询重写器
+        self._search_tool = None  # 搜索工具
+        self._tools = None  # 所有可用工具列表
+        self._web_search_tool = make_web_search()  # 网络搜索工具
 
         # ---- Graph（延迟编译）----
+        # LangGraph图结构和相关组件，首次请求时才构建
         self._graph = None
         self._tool_node = None
         self._model_with_tools = None
@@ -131,13 +147,16 @@ class AgentService:
         self._checkpointer = None
 
         # ---- 摘要轮次追踪 ----
+        # 跟踪上次执行摘要的轮次，避免频繁生成摘要造成资源浪费
         self._last_summary_rounds = 0
 
         # ---- 事件追踪（每次请求重置）----
+        # 用于流式输出时跟踪工具调用状态
         self._seen_tool_starts = set()
         self._tool_call_id_to_name = {}
 
         # ---- 用户隔离：SQLite checkpoint 路径 ----
+        # 为每个用户创建独立的检查点数据库，保存对话历史和状态
         db_name = (
             f"checkpoints_agent_user_{user_id}.db"
             if user_id is not None
@@ -152,6 +171,12 @@ class AgentService:
 
     @property
     def summary_model(self):
+        """获取摘要模型，延迟初始化。
+        
+        设计原因：
+        - 摘要生成不需要实时进行，仅在达到特定轮次或会话结束时触发
+        - 使用专门的温度参数(temperature=0.0)确保摘要的一致性和准确性
+        """
         if self._summary_model is None:
             self._summary_model = ChatTongyi(
                 model=config.chat_model_name, temperature=0.0)
@@ -159,6 +184,12 @@ class AgentService:
 
     @property
     def vector_service(self):
+        """获取向量存储服务，延迟初始化。
+        
+        设计原因：
+        - 向量存储只在需要进行语义检索时才加载
+        - 使用用户特定的collection_name实现数据隔离
+        """
         if self._vector_service is None:
             logger.debug("延迟初始化 VectorStoreService（collection=%s）", self._collection_name)
             self._vector_service = VectorStoreService(
@@ -169,6 +200,12 @@ class AgentService:
 
     @property
     def hybrid_retriever(self):
+        """获取混合检索器，延迟初始化。
+        
+        设计原因：
+        - 结合向量检索和BM25关键词检索的优势，提高检索准确率
+        - 只有在真正需要检索时才构建检索器，节省资源
+        """
         if self._hybrid_retriever is None:
             logger.debug("延迟初始化 HybridRetriever + BM25")
             vector_retriever = self.vector_service.get_retriever()
@@ -179,18 +216,37 @@ class AgentService:
 
     @property
     def reranker(self):
+        """获取重排序服务，延迟初始化。
+        
+        设计原因：
+        - 对初步检索结果进行精排，提高最终返回文档的相关性
+        - 作为可选优化步骤，按需加载
+        """
         if self._reranker is None:
             self._reranker = RerankerService()
         return self._reranker
 
     @property
     def query_rewriter(self):
+        """获取查询重写器，延迟初始化。
+        
+        设计原因：
+        - 将用户原始查询转换为更适合检索的形式
+        - 改善检索效果，特别是在处理复杂或多义词查询时
+        """
         if self._query_rewriter is None:
             self._query_rewriter = QueryRewriter()
         return self._query_rewriter
 
     @property
     def tools(self):
+        """获取所有可用工具列表，延迟初始化。
+        
+        设计原因：
+        - 整合所有可用的工具函数供Agent调用
+        - 包括知识库搜索、网络搜索、FAQ查找和人工升级等功能
+        - 首次访问时才完整构建，避免不必要的初始化开销
+        """
         if self._tools is None:
             if self._search_tool is None:
                 logger.info("首次加载检索组件（embedding/BM25/Chroma/Reranker）")
