@@ -2,13 +2,9 @@
 """
 
 from src.agent.tools.search_kb import make_search_knowledge_base
-from src.agent.tools.escalate import escalate_to_human
-from src.agent.tools.faq import lookup_faq
 from src.agent.tools.web_search import make_web_search
 
 __all__ = [
     "make_search_knowledge_base",
-    "escalate_to_human",
-    "lookup_faq",
     "make_web_search",
 ]

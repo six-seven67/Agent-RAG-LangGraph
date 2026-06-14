@@ -37,8 +37,7 @@ def make_web_search():
             - 需要外部验证的事实
 
             不适用场景:
-            - 产品/服务知识 → 用 search_knowledge_base
-            - 高频FAQ → 用 lookup_faq
+            - 文档知识问答 → 用 search_knowledge_base
 
             Args:
                 query: 搜索查询字符串。
@@ -71,8 +70,7 @@ def make_web_search():
         - 用户明确要求联网搜索
 
         不适用场景:
-        - 产品/服务知识 → 优先使用 search_knowledge_base
-        - 高频FAQ（营业时间、退换货等） → 优先使用 lookup_faq
+        - 文档知识问答 → 优先使用 search_knowledge_base
 
         Args:
             query: 搜索查询字符串。建议提取核心关键词，
