@@ -1,14 +1,15 @@
 """
-Agent 智能客服服务 — 基于 LangGraph 自定义 StateGraph
+知识库文档问答 Agent 服务 — 基于 LangGraph 自定义 StateGraph
 
-v3.2.0: 混合架构 — 规则路由 + ReAct 循环 + 会话结束总结
+v3.3.0: 节点提取到 nodes.py + 幻觉校验 + Token 双阈值压缩 + 会话结束总结
 
 架构:
-  StateGraph(AgentState)
-    ├── classify_intent 节点: 规则匹配快速路由（FAQ/转人工/结束/继续）
-    ├── summarize 节点: 轮次触发对话压缩
+  StateGraph(AgentState)  — 6 节点
+    ├── classify_intent 节点: 规则匹配快速路由（闲聊/结束/继续）
+    ├── summarize 节点: 轮次 + Token 双阈值触发对话压缩
     ├── agent 节点: ReAct 循环（LLM + bind_tools ⇄ tools）
     ├── tools 节点: ToolNode 执行工具调用
+    ├── hallucination_check 节点: 验证回答是否基于文档内容
     └── session_end_summary 节点: 会话结束全局总结
 
 流式输出:
@@ -16,6 +17,7 @@ v3.2.0: 混合架构 — 规则路由 + ReAct 循环 + 会话结束总结
   - AIMessageChunk → token 事件（逐字输出）
   - AIMessage(tool_calls) → tool_start 事件
   - ToolMessage → tool_end 事件
+  - [HALLUCINATION_FAIL] → hallucination 事件
 
 向后兼容:
   设置 AGENT_BACKEND=legacy 可切回 create_agent 模式。
@@ -33,7 +35,6 @@ import time
 from typing import AsyncIterator, Literal
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from langchain_core.messages import (
@@ -49,16 +50,19 @@ from src.retrieval import HybridRetriever
 from src.rag.rewriter import QueryRewriter
 from src.agent.tools import (
     make_search_knowledge_base,
-    escalate_to_human,
-    lookup_faq,
     make_web_search,
 )
 from src.agent.state import AgentState
-from src.agent.prompts import (
-    AGENT_SYSTEM_PROMPT, SUMMARIZE_PROMPT, SESSION_END_SUMMARY_PROMPT
-)
+from src.agent.prompts import AGENT_SYSTEM_PROMPT
 from src.agent.formatter import format_answer_output
-from src.agent.classifier import classify_intent_node
+from src.agent.nodes import (
+    classify_intent_wrapper,
+    summarize_node,
+    agent_node,
+    tools_node,
+    session_end_summary_node,
+    hallucination_check_node,
+)
 from src.agent.streaming import (
     init_event_tracking, classify_chunk
 )
@@ -81,26 +85,23 @@ STORAGE_ROOT = config.chat_history_path
 
 
 class AgentService:
-    """Agent 智能客服服务（混合架构 StateGraph）。
+    """知识库文档问答 Agent 服务（混合架构 StateGraph）。
 
-    v3.2.0 架构:
-      classify_intent → [faq_direct | end_session | summarize]
+    v3.3.0 架构（6 节点）:
+      classify_intent → [direct_chat | end_session | summarize]
       summarize → agent ⇄ tools（ReAct 循环）
+      agent → hallucination_check（文档问答完成时校验）
+      hallucination_check → agent（未通过）| END（通过）
       session_end_summary → END
 
     特性:
-    - 规则匹配快速路由：拦截 FAQ / 转人工 / 结束会话，减少延迟
-    - ReAct 循环：保持多工具链式调用的灵活性
-    - 轮次触发总结：按对话轮数自动压缩历史
+    - 规则匹配快速路由：拦截闲聊 / 结束会话，减少延迟
+    - ReAct 循环：LLM 自主决策是否检索知识库
+    - 幻觉校验：回答完成后自动检查是否严格基于文档内容
+    - 双阈值压缩：轮次 + Token 双重触发对话压缩
     - 会话结束总结：用户结束时生成全局摘要
 
     每个用户使用独立的 SQLite 数据库文件 + Chroma collection，实现用户隔离。
-    
-    设计原因：
-    - 采用LangGraph的StateGraph而非简单串行结构，通过条件路由实现动态流程控制
-    - 包含循环机制（如检索质量差时自动重试），提升系统鲁棒性
-    - 根据问题类型（闲聊/FAQ/知识问答）分流处理，优化响应效率
-    - 使用用户隔离确保数据安全性和个性化体验
     """
 
     def __init__(self, user_id: int = None):
@@ -241,10 +242,10 @@ class AgentService:
     @property
     def tools(self):
         """获取所有可用工具列表，延迟初始化。
-        
+
         设计原因：
         - 整合所有可用的工具函数供Agent调用
-        - 包括知识库搜索、网络搜索、FAQ查找和人工升级等功能
+        - 包括知识库搜索和网络搜索
         - 首次访问时才完整构建，避免不必要的初始化开销
         """
         if self._tools is None:
@@ -255,8 +256,6 @@ class AgentService:
             self._tools = [
                 self._search_tool,
                 self._web_search_tool,
-                lookup_faq,
-                escalate_to_human,
             ]
         return self._tools
 
@@ -265,12 +264,12 @@ class AgentService:
     # ================================================================
 
     def _build_graph(self):
-        """构建自定义 StateGraph（v3.2.0 混合架构）。"""
+        """构建自定义 StateGraph（v3.3.0 混合架构 + 幻觉校验）。"""
         if config.agent_backend == "legacy":
             logger.warning("使用 LEGACY 后端（create_agent）")
             return self._build_legacy_graph()
 
-        logger.info("构建 Custom StateGraph（v3.2.0 混合架构）")
+        logger.info("构建 Custom StateGraph（v3.3.0 节点=%d + 幻觉校验）", 6)
         graph = StateGraph(AgentState)
 
         # 注册节点
@@ -279,20 +278,30 @@ class AgentService:
         graph.add_node("agent", self._agent_node)
         graph.add_node("tools", self._lazy_tools_node)
         graph.add_node("session_end_summary", self._session_end_summary_node)
-        logger.debug("已注册 5 个节点: classify_intent, summarize, agent, tools, session_end_summary")
+        graph.add_node("hallucination_check", self._hallucination_check_node)
+        logger.debug("已注册 6 个节点: classify_intent, summarize, agent, tools, "
+                     "session_end_summary, hallucination_check")
 
         # 边连接
         graph.add_edge(START, "classify_intent")
         graph.add_conditional_edges(
             "classify_intent", self._route_intent,
-            {"faq_direct": END, "end_session": "session_end_summary", "continue": "summarize"},
+            {"direct_chat": END, "end_session": "session_end_summary", "continue": "summarize"},
         )
         graph.add_edge("summarize", "agent")
         graph.add_conditional_edges(
             "agent", self._should_continue,
-            {"tools": "tools", "__end__": END},
+            {
+                "tools": "tools",
+                "hallucination_check": "hallucination_check",
+                "__end__": END,
+            },
         )
         graph.add_edge("tools", "agent")
+        graph.add_conditional_edges(
+            "hallucination_check", self._should_recheck,
+            {"agent": "agent", "__end__": END},
+        )
         graph.add_edge("session_end_summary", END)
 
         return graph.compile(checkpointer=self._checkpointer)
@@ -312,12 +321,18 @@ class AgentService:
     # ================================================================
 
     @staticmethod
-    def _route_intent(state: AgentState) -> Literal["faq_direct", "end_session", "continue"]:
+    def _route_intent(state: AgentState) -> Literal["direct_chat", "end_session", "continue"]:
         from src.agent.classifier import route_intent
         return route_intent(state, AgentService._count_rounds)
 
     @staticmethod
-    def _should_continue(state: AgentState) -> Literal["tools", "__end__"]:
+    def _should_continue(state: AgentState) -> Literal["tools", "hallucination_check", "__end__"]:
+        """agent 节点后路由。
+
+        - tool_calls → tools 节点执行工具
+        - 无 tool_calls + 有检索历史 → hallucination_check 校验
+        - 无 tool_calls + 无检索历史 → __end__ 结束（闲聊/追问）
+        """
         messages = state.get("messages", [])
         if not messages:
             logger.debug("ReAct 路由: __end__（无消息）")
@@ -327,7 +342,38 @@ class AgentService:
             tool_names = [tc.get("name", "?") for tc in last_msg.tool_calls]
             logger.info("ReAct 路由: tools → 调用 %s", tool_names)
             return "tools"
-        logger.debug("ReAct 路由: __end__（LLM 直接回答，无 tool_calls）")
+
+        # 无 tool_calls → 检查是否发生过检索
+        has_retrieval = any(isinstance(m, ToolMessage) for m in messages)
+        if has_retrieval:
+            logger.debug("ReAct 路由: hallucination_check（回答完成，发生过检索）")
+            return "hallucination_check"
+
+        logger.debug("ReAct 路由: __end__（无检索对话）")
+        return "__end__"
+
+    @staticmethod
+    def _should_recheck(state: AgentState) -> Literal["agent", "__end__"]:
+        """幻觉校验后路由。
+
+        - 已达最大重试次数 → __end__ 强行结束
+        - 最后消息含 [HALLUCINATION_FAIL] 标记 → agent 重新生成
+        - 否则 → __end__ 正常结束
+        """
+        if state.get("hallucination_retry_count", 0) > 1:
+            logger.debug("幻觉路由: __end__（已达最大重试）")
+            return "__end__"
+        messages = state.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if isinstance(last_msg, AIMessage):
+                pass  # not a fail marker, continue to check
+            # 查找最近的 [HALLUCINATION_FAIL] 标记（作为 SystemMessage 被注入）
+            for msg in reversed(messages):
+                if isinstance(msg, SystemMessage) and "[系统指令] 上一轮回答存在事实问题" in str(msg.content):
+                    logger.info("幻觉路由: agent（重新生成）")
+                    return "agent"
+        logger.debug("幻觉路由: __end__（校验通过）")
         return "__end__"
 
     @staticmethod
@@ -335,207 +381,46 @@ class AgentService:
         return sum(1 for m in messages if isinstance(m, HumanMessage))
 
     # ================================================================
-    # 节点: classify_intent
+    # 节点: classify_intent（委托 nodes.py）
     # ================================================================
 
     async def _classify_intent_node(self, state: AgentState) -> dict:
-        return await classify_intent_node(state, self._count_rounds)
+        return await classify_intent_wrapper(self, state)
 
     # ================================================================
-    # 节点: summarize
+    # 节点: summarize（委托 nodes.py）
     # ================================================================
 
     async def _summarize_node(self, state: AgentState) -> dict:
-        t0 = time.monotonic()
-        messages = state.get("messages", [])
-        rounds = self._count_rounds(messages)
-        threshold = config.agent_summary_trigger_rounds
-        keep_recent = config.agent_summary_keep_recent
-        max_chars = config.agent_summary_max_chars
-
-        # 短路检查
-        if rounds < threshold:
-            logger.debug("summarize: 短路（轮次=%d < 阈值=%d）", rounds, threshold)
-            return {"summary_updated": False}
-
-        if rounds - self._last_summary_rounds < config.agent_summary_min_interval_rounds:
-            logger.debug("summarize: 短路（距上次总结仅 %d 轮 < 最小间隔 %d）",
-                         rounds - self._last_summary_rounds, config.agent_summary_min_interval_rounds)
-            return {"summary_updated": False}
-
-        if len(messages) <= keep_recent:
-            logger.debug("summarize: 短路（消息数=%d ≤ 保留数=%d）", len(messages), keep_recent)
-            return {"summary_updated": False}
-
-        old_messages = list(messages[:-keep_recent])
-        recent_messages = list(messages[-keep_recent:])
-
-        logger.info("summarize: 触发总结（轮次=%d, 旧消息=%d条, 保留=%d条）",
-                     rounds, len(old_messages), len(recent_messages))
-
-        # 格式化旧消息
-        old_text_parts = []
-        for msg in old_messages:
-            role = "用户" if isinstance(msg, HumanMessage) else "助手"
-            content = msg.content if hasattr(msg, "content") else str(msg)
-            if content and len(content) > 300:
-                content = content[:300] + "..."
-            old_text_parts.append(f"[{role}]: {content}")
-        old_text = "\n".join(old_text_parts)
-
-        # 增量合并指令
-        existing_summary = state.get("summary", "")
-        existing_instruction = (
-            f"当前已有摘要: 「{existing_summary}」\n"
-            "请将其与以下新对话合并，更新为新的运行摘要。"
-        ) if existing_summary else "这是首次生成摘要。"
-
-        # 调用 LLM
-        try:
-            prompt = SUMMARIZE_PROMPT.format(
-                existing_summary_instruction=existing_instruction,
-                max_chars=max_chars,
-                old_messages_text=old_text,
-            )
-            logger.debug("summarize: 调用摘要 LLM（prompt 长度=%d）", len(prompt))
-            response = await self.summary_model.ainvoke(prompt)
-            new_summary = response.content if hasattr(response, "content") else str(response)
-            new_summary = new_summary.strip()
-            if len(new_summary) > max_chars * 2:
-                new_summary = new_summary[:max_chars * 2]
-            elapsed = time.monotonic() - t0
-            logger.info("summarize: 完成（%d字, 耗时 %.2fs）", len(new_summary), elapsed)
-        except Exception as e:
-            logger.error("summarize: LLM 调用失败，跳过总结: %s", e, exc_info=True)
-            return {"summary_updated": False}
-
-        self._last_summary_rounds = rounds
-        summary_msg = SystemMessage(
-            content=f"[对话历史摘要]\n{new_summary}\n---\n以下是最近的对话："
-        )
-        return {
-            "messages": [summary_msg] + recent_messages,
-            "summary": new_summary,
-            "summary_updated": True,
-        }
+        return await summarize_node(self, state)
 
     # ================================================================
-    # 节点: agent
+    # 节点: agent（委托 nodes.py）
     # ================================================================
 
     async def _agent_node(self, state: AgentState) -> dict:
-        t0 = time.monotonic()
-        messages = state.get("messages", [])
-        summary = state.get("summary", "")
-        rounds = self._count_rounds(messages)
-
-        system_content = AGENT_SYSTEM_PROMPT.format(
-            summary=summary if summary else "（暂无对话摘要）"
-        )
-        full_messages = [SystemMessage(content=system_content)] + list(messages)
-
-        if self._model_with_tools is None:
-            self._model_with_tools = self.chat_model.bind_tools(self.tools)
-        model_with_tools = self._model_with_tools
-        logger.debug("agent: 调用 LLM（消息数=%d, 轮次=%d, 工具数=%d）",
-                      len(full_messages), rounds, len(self.tools))
-
-        try:
-            response = await model_with_tools.ainvoke(full_messages)
-            elapsed = time.monotonic() - t0
-            if hasattr(response, "tool_calls") and response.tool_calls:
-                tool_info = [(tc.get("name", "?"), str(tc.get("args", {}))[:80])
-                             for tc in response.tool_calls]
-                logger.info("agent: LLM 决定调用工具（耗时 %.2fs）%s", elapsed, tool_info)
-            else:
-                preview = (response.content[:80] + "...") if hasattr(response, "content") and len(response.content or "") > 80 else (response.content or "")
-                logger.info("agent: LLM 直接回答（耗时 %.2fs）: %s", elapsed, preview)
-        except Exception as e:
-            elapsed = time.monotonic() - t0
-            logger.error("agent: LLM 调用失败（耗时 %.2fs）: %s", elapsed, e, exc_info=True)
-            return {
-                "messages": [AIMessage(content="抱歉，我暂时无法处理您的请求，请稍后再试。如需紧急帮助，可转人工客服。")]
-            }
-        return {"messages": [response]}
+        return await agent_node(self, state)
 
     # ================================================================
-    # 节点: tools（懒加载 ToolNode）
+    # 节点: tools（委托 nodes.py）
     # ================================================================
 
     async def _lazy_tools_node(self, state: AgentState) -> dict:
-        if self._tool_node is None:
-            logger.info("首次创建 ToolNode（触发检索组件懒加载）")
-            self._tool_node = ToolNode(self.tools)
-        return await self._tool_node.ainvoke(state)
+        return await tools_node(self, state)
 
     # ================================================================
-    # 节点: session_end_summary
+    # 节点: session_end_summary（委托 nodes.py）
     # ================================================================
 
     async def _session_end_summary_node(self, state: AgentState) -> dict:
-        t0 = time.monotonic()
-        messages = state.get("messages", [])
-        total_rounds = self._count_rounds(messages)
+        return await session_end_summary_node(self, state)
 
-        tool_names = set()
-        for msg in messages:
-            if isinstance(msg, ToolMessage):
-                tool_names.add(getattr(msg, "name", "unknown"))
+    # ================================================================
+    # 节点: hallucination_check（委托 nodes.py，v3.3.0 新增）
+    # ================================================================
 
-        logger.info("session_end_summary: 开始生成全局总结（轮次=%d, 消息数=%d, 工具=%s）",
-                     total_rounds, len(messages), list(tool_names))
-
-        # 格式化对话文本
-        conversation_parts = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage):
-                role = "用户"
-            elif isinstance(msg, AIMessage):
-                role = "助手"
-            elif isinstance(msg, ToolMessage):
-                role = "系统(工具)"
-            elif isinstance(msg, SystemMessage):
-                if "[对话历史摘要]" in str(msg.content):
-                    continue
-                role = "系统"
-            else:
-                continue
-            content = msg.content if hasattr(msg, "content") else str(msg)
-            if content and len(content) > 500:
-                content = content[:500] + "..."
-            conversation_parts.append(f"[{role}]: {content}")
-
-        conversation_text = "\n".join(conversation_parts)
-
-        # 调用 LLM
-        try:
-            prompt = SESSION_END_SUMMARY_PROMPT.format(conversation_text=conversation_text)
-            logger.debug("session_end_summary: 调用 LLM（prompt 长度=%d）", len(prompt))
-            response = await self.summary_model.ainvoke(prompt)
-            summary_text = response.content if hasattr(response, "content") else str(response)
-            summary_text = summary_text.strip()
-            elapsed = time.monotonic() - t0
-            logger.info("session_end_summary: 完成（%d字, 耗时 %.2fs）", len(summary_text), elapsed)
-        except Exception as e:
-            elapsed = time.monotonic() - t0
-            logger.error("session_end_summary: LLM 调用失败（耗时 %.2fs）: %s", elapsed, e, exc_info=True)
-            summary_text = (
-                f"会话结束。共 {total_rounds} 轮对话。"
-                f"使用了以下工具：{', '.join(tool_names) if tool_names else '无'}。"
-                "感谢您的咨询，如有其他问题欢迎随时联系。"
-            )
-
-        end_message = AIMessage(
-            content=(
-                f"📋 **会话总结**\n\n"
-                f"{summary_text}\n\n"
-                f"---\n"
-                f"📊 会话统计: 共 {total_rounds} 轮对话 | "
-                f"使用工具: {', '.join(tool_names) if tool_names else '无'}\n\n"
-                f"感谢您的咨询！如有其他问题，欢迎随时联系我们。👋"
-            )
-        )
-        return {"messages": [end_message]}
+    async def _hallucination_check_node(self, state: AgentState) -> dict:
+        return await hallucination_check_node(self, state)
 
     # ================================================================
     # 延迟初始化 Graph
@@ -687,7 +572,7 @@ async def _test_agent():
     """异步测试 Agent 服务。"""
     svc = AgentService()
     session_config = config.build_session_config("test_agent_user")
-    print("=== Agent 智能客服测试 (v3.2.0 混合架构) ===")
+    print("=== 知识库文档问答 Agent 测试 (v3.3.0) ===")
     async for event in svc.astream(
         {"input": "针织毛衣如何保养？"}, session_config
     ):

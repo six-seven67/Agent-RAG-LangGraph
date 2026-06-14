@@ -89,6 +89,9 @@ def classify_chunk(msg, metadata: dict, service) -> dict:
         if "📋 **会话总结**" in str(content):
             return {"type": "session_end", "data": ""}
 
+        if "[HALLUCINATION_FAIL]" in str(content):
+            return {"type": "hallucination", "data": "检测到回答可能不准确，正在重新生成..."}
+
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             valid_tools = []
             for tc in msg.tool_calls:

@@ -19,3 +19,4 @@ class AgentState(TypedDict):
     summary: str  # 当前会话的摘要信息，用于上下文理解和长期记忆；通过提取关键信息减少token消耗，提高响应效率
     summary_updated: bool  # 标记summary是否已更新，避免重复处理；防止在同一个会话周期内多次生成摘要造成资源浪费
     is_session_end: bool  # 用户请求结束会话 → 触发 session_end_summary；允许系统优雅地关闭会话并生成最终总结，提升用户体验
+    hallucination_retry_count: int  # 幻觉校验重试计数，避免无限循环（最多重试1次）

@@ -81,6 +81,9 @@ agent_summary_min_interval_rounds = int(os.getenv("AGENT_SUMMARY_MIN_INTERVAL_RO
 agent_summary_keep_recent = int(os.getenv("AGENT_SUMMARY_KEEP_RECENT", "6"))
 # 摘要最大字符数
 agent_summary_max_chars = int(os.getenv("AGENT_SUMMARY_MAX_CHARS", "200"))
+# Token 阈值触发压缩（中文约 2 chars/token，默认 4000 chars ≈ 2000 tokens）
+# 当对话历史字符数超过此值，即使轮次未达阈值也会触发压缩
+agent_summary_token_threshold = int(os.getenv("AGENT_SUMMARY_TOKEN_THRESHOLD", "4000"))
 
 # ===== Agent 意图分类（classify_intent 规则匹配）=====
 # 是否启用规则匹配快速路由（关闭则所有请求走 agent LLM 决策）
