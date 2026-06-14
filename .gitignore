@@ -23,9 +23,14 @@ RAG优化.md
 # ===== 对话历史（运行时生成，含用户隐私）=====
 data/chat_history/
 
-# ===== 上传文件去重记录（运行时生成）=====
+# ===== 用户上传文件（运行时生成，含隐私）=====
+data/uploads/
 data/md5.text
 md5.text
+
+# ===== 前端构建产物 =====
+node_modules/
+frontend_vue/dist/
 
 # ===== 临时文件 =====
 *tempfile_*.mermaid
