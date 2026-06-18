@@ -93,6 +93,30 @@ async def add_to_blacklist(jti: str, ttl_seconds: int) -> None:
         logger.error("黑名单写入失败（jti=%s）: %s", jti[:10], e)
 
 
+async def check_and_blacklist(jti: str, ttl_seconds: int) -> bool:
+    """
+    原子操作：检查 jti 是否已在黑名单，如不在则写入。
+
+    使用 Redis SETNX 保证原子性，防止并发 refresh 请求同时通过黑名单检查。
+
+    Args:
+        jti: token 的唯一标识
+        ttl_seconds: 黑名单有效期
+
+    Returns:
+        True: 成功写入（jti 之前不在黑名单中）
+        False: jti 已在黑名单中（被并发请求抢先）
+    """
+    try:
+        redis = await get_redis()
+        # SET key value NX EX ttl → 仅在 key 不存在时设置，原子操作
+        result = await redis.set(f"jwt:blacklist:{jti}", "1", nx=True, ex=ttl_seconds)
+        return result is True  # None 表示 key 已存在
+    except Exception as e:
+        logger.error("原子黑名单操作失败（jti=%s），降级放行: %s", jti[:10], e)
+        return True  # Redis 故障时降级放行
+
+
 async def is_blacklisted(jti: str) -> bool:
     """检查 token 是否在黑名单中。
 

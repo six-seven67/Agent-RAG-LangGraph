@@ -41,11 +41,11 @@ reranker_top_n = 3
 # query rewrite (查询改写)
 query_rewrite_enabled = True
 query_rewrite_min_length = 15
-query_rewrite_model_name = "qwen3-max"
+query_rewrite_model_name = "qwen-max"
 
 # embedding & chat
 embedding_model_name = "text-embedding-v4"
-chat_model_name = "qwen3-max"
+chat_model_name = "qwen-max"
 
 # ===== Agent 后端选择（v3.2.0）=====
 # "custom" = 混合架构 StateGraph（classify → summarize → agent ⇄ tools）
@@ -66,7 +66,21 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "") or None
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
 # ===== JWT 配置 =====
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-to-a-random-secret")
+_JWT_SECRET = os.getenv("JWT_SECRET_KEY", "")
+_DEFAULT_SECRET = "change-me-to-a-random-secret"
+
+if not _JWT_SECRET or _JWT_SECRET == _DEFAULT_SECRET:
+    import secrets
+    import sys
+    _JWT_SECRET = secrets.token_hex(32)
+    print(
+        "[WARNING] JWT_SECRET_KEY 未配置或使用默认值！"
+        "已自动生成临时密钥，但多进程/重启后所有用户需重新登录。"
+        "请在生产环境中设置 JWT_SECRET_KEY 环境变量。",
+        file=sys.stderr,
+    )
+
+JWT_SECRET_KEY = _JWT_SECRET
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 JWT_REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))

@@ -151,6 +151,10 @@ class AgentService:
         # 跟踪上次执行摘要的轮次，避免频繁生成摘要造成资源浪费
         self._last_summary_rounds = 0
 
+        # ---- Graph 初始化锁 ----
+        # 防止并发请求同时初始化 Graph（重复创建 aiosqlite 连接）
+        self._graph_lock = asyncio.Lock()
+
         # ---- 事件追踪（每次请求重置）----
         # 用于流式输出时跟踪工具调用状态
         self._seen_tool_starts = set()
@@ -429,15 +433,21 @@ class AgentService:
     async def _ensure_graph(self):
         if self._graph is not None:
             return self._graph
-        t0 = time.monotonic()
-        import aiosqlite
-        logger.info("首次初始化 Graph（checkpoint_db=%s）", self._checkpoint_db_path)
-        self._checkpointer_conn = await aiosqlite.connect(self._checkpoint_db_path)
-        self._checkpointer = AsyncSqliteSaver(self._checkpointer_conn)
-        self._graph = self._build_graph()
-        elapsed = time.monotonic() - t0
-        logger.info("Graph 编译完成（耗时 %.2fs）", elapsed)
-        return self._graph
+
+        async with self._graph_lock:
+            # 双重检查：锁内再次确认（防止并发时重复初始化）
+            if self._graph is not None:
+                return self._graph
+
+            t0 = time.monotonic()
+            import aiosqlite
+            logger.info("首次初始化 Graph（checkpoint_db=%s）", self._checkpoint_db_path)
+            self._checkpointer_conn = await aiosqlite.connect(self._checkpoint_db_path)
+            self._checkpointer = AsyncSqliteSaver(self._checkpointer_conn)
+            self._graph = self._build_graph()
+            elapsed = time.monotonic() - t0
+            logger.info("Graph 编译完成（耗时 %.2fs）", elapsed)
+            return self._graph
 
     # ================================================================
     # 公共 API — ainvoke（非流式）

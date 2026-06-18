@@ -19,6 +19,7 @@ import time
 from langchain_core.messages import (
     HumanMessage, AIMessage, ToolMessage, SystemMessage
 )
+from langgraph.graph.message import RemoveMessage
 from langgraph.prebuilt import ToolNode
 
 from src.agent.state import AgentState
@@ -141,8 +142,17 @@ async def summarize_node(svc, state: AgentState) -> dict:
     summary_msg = SystemMessage(
         content=f"[对话历史摘要]\n{new_summary}\n---\n以下是最近的对话："
     )
+    # 使用 RemoveMessage 真正从 state 中删除旧消息，防止对话历史无限增长
+    # add_messages reducer 默认是"追加去重"，只有 RemoveMessage 能触发删除
+    removed = [
+        RemoveMessage(id=msg.id)
+        for msg in old_messages
+        if hasattr(msg, 'id') and msg.id
+    ]
+    logger.debug("summarize: 删除 %d 条旧消息，保留 %d 条 + 摘要",
+                 len(removed), len(recent_messages))
     return {
-        "messages": [summary_msg] + recent_messages,
+        "messages": removed + [summary_msg] + recent_messages,
         "summary": new_summary,
         "summary_updated": True,
     }
@@ -159,14 +169,29 @@ async def agent_node(svc, state: AgentState) -> dict:
     让 LLM 自主判断是否需要检索。
     """
     t0 = time.monotonic()
-    messages = state.get("messages", [])
+    messages = list(state.get("messages", []))
     summary = state.get("summary", "")
     rounds = svc._count_rounds(messages)
+
+    # 防御性过滤：如果 summary 非空，只保留摘要标记之后的消息
+    # 这确保即使 RemoveMessage 未完全生效（如旧版 langgraph），LLM 上下文也不会膨胀
+    if summary:
+        compacted = []
+        found_marker = False
+        for msg in reversed(messages):
+            if isinstance(msg, SystemMessage) and "[对话历史摘要]" in str(msg.content):
+                compacted.append(msg)
+                found_marker = True
+                break
+            compacted.append(msg)
+        compacted.reverse()
+        if found_marker:
+            messages = compacted
 
     system_content = AGENT_SYSTEM_PROMPT.format(
         summary=summary if summary else "（暂无对话摘要）"
     )
-    full_messages = [SystemMessage(content=system_content)] + list(messages)
+    full_messages = [SystemMessage(content=system_content)] + messages
 
     if svc._model_with_tools is None:
         svc._model_with_tools = svc.chat_model.bind_tools(svc.tools)
@@ -305,8 +330,8 @@ async def hallucination_check_node(svc, state: AgentState) -> dict:
 
     # ---- 已达最大重试 ----
     if retry_count >= 1:
-        logger.info("hallucination_check: 已达最大重试次数，跳过")
-        return {}
+        logger.info("hallucination_check: 已达最大重试次数，跳过并强制结束")
+        return {"hallucination_retry_count": retry_count + 1}
 
     # ---- 提取最后一条 AI 回答 ----
     last_answer = ""
@@ -323,21 +348,40 @@ async def hallucination_check_node(svc, state: AgentState) -> dict:
         logger.debug("hallucination_check: 回答过短（%d字），可能是追问澄清，跳过", len(last_answer))
         return {"hallucination_retry_count": retry_count + 1}
 
-    # ---- 提取检索上下文 ----
+    # ---- 提取检索上下文 + 空检索预检 ----
     context_parts = []
+    all_empty = True  # 预检：所有工具结果是否均为空/不可用
+    empty_markers = ["无相关参考资料", "未配置", "联网搜索功能未配置",
+                     "未找到", "无结果", "暂无相关", "请检查配置"]
     for msg in messages:
         if isinstance(msg, ToolMessage) and msg.content:
             content = msg.content
-            # 截断过长内容以控制 prompt 长度
             if len(content) > 800:
                 content = content[:800] + "..."
             context_parts.append(content)
+            # 检查是否包含有效信息
+            if not any(marker in content for marker in empty_markers):
+                all_empty = False
 
     if not context_parts:
         logger.debug("hallucination_check: 无检索上下文，跳过")
         return {"hallucination_retry_count": retry_count + 1}
 
     context = "\n---\n".join(context_parts)
+
+    # ---- 空检索预检：所有工具结果均为空/不可用 → 跳过 LLM 调用，直接指令 ----
+    if all_empty:
+        logger.warning("hallucination_check: 检索结果全部为空/不可用，跳过 LLM 检查，直接要求诚实回答")
+        correction_msg = SystemMessage(content=(
+            "[系统指令] 知识库和联网搜索均未获取到有效信息。"
+            "请直接告知用户「文档中未找到相关信息」或「当前无法获取外部信息」，"
+            "**绝对不要**编造任何文档中不存在的数据、法规或结论。"
+            "如果需要，可以建议用户上传相关文档后再查询。"
+        ))
+        return {
+            "messages": [correction_msg],
+            "hallucination_retry_count": retry_count + 1,
+        }
 
     # ---- LLM 事实核查 ----
     t0 = time.monotonic()
@@ -359,9 +403,13 @@ async def hallucination_check_node(svc, state: AgentState) -> dict:
         logger.warning("hallucination_check: FAIL（耗时 %.2fs）— %s", elapsed, reason)
 
         correction_msg = SystemMessage(content=(
-            f"[系统指令] 上一轮回答存在事实问题：{reason}\n"
-            "请严格基于之前的工具检索结果重新回答。只使用文档中明确存在的信息，"
-            "不要编造任何数据、名称或结论。如果文档中确实没有相关信息，请明确告知用户。"
+            f"[系统指令] 上一轮回答被事实核查驳回：{reason}\n"
+            "请基于检索内容重新回答。你可以对检索结果进行合理归纳和适当丰富表达，"
+            "但必须确保：\n"
+            "1. 核心事实（法规条款号、精确数字、日期、专有名称）必须能在检索结果中找到出处\n"
+            "2. 不要编造检索结果中不存在的具体条款、精确数字、文档名称\n"
+            "3. 通用性的解读、解释、归纳总结是允许的\n"
+            "4. 如果检索结果确实不足以回答问题，请如实告知用户"
         ))
         return {
             "messages": [correction_msg],

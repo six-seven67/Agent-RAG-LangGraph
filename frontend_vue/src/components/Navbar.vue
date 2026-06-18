@@ -51,7 +51,7 @@ import { useRouter } from 'vue-router'
 import { useToastStore } from '../stores/toast.js'
 import { useTheme } from '../composables/useTheme.js'
 import { showCommandPalette } from '../composables/useKeyboard.js'
-import { logout, getMe } from '../api/index.js'
+import { logout, getMe, getAccessToken } from '../api/index.js'
 
 defineEmits(['toggleSidebar'])
 
@@ -76,6 +76,7 @@ const themeLabel = computed(() => {
 })
 
 onMounted(async () => {
+  if (!getAccessToken()) return  // 未认证时跳过，避免无意义的 401
   try {
     const data = await getMe()
     username.value = data.username || ''

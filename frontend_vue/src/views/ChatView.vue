@@ -233,12 +233,15 @@ async function handleSend() {
 
   messages.value.push({ role: 'assistant', content: '', created_at: new Date().toISOString() })
   const aiIdx = messages.value.length - 1
+  let isRetrying = false  // 幻觉重试期间隐藏中间输出
   autoScroll.scrollToBottom(true)
 
   await API.sendMessageStream(query, currentSessionId.value, {
     onToken(_token, fullAnswer) {
-      messages.value[aiIdx].content = fullAnswer
-      autoScroll.scrollToBottom()
+      if (!isRetrying) {
+        messages.value[aiIdx].content = fullAnswer
+        autoScroll.scrollToBottom()
+      }
     },
     onToolStart(toolData) {
       const tools = toolData.tools || []
@@ -268,11 +271,18 @@ async function handleSend() {
     },
     onDone(fullAnswer) {
       messages.value[aiIdx].content = formatAnswerOutput(fullAnswer)
+      isRetrying = false
       isStreaming.value = false
       autoScroll.scrollToBottom()
       if (!currentSessionId.value) loadSessions()
       // Attach copy handlers to code blocks in the last message
       nextTick(() => attachCopyButtons())
+    },
+    onHallucination(_data) {
+      // 幻觉校验失败 → 显示思考中，隐藏后续中间输出
+      isRetrying = true
+      messages.value[aiIdx].content = '🤔 思考中...'
+      autoScroll.scrollToBottom()
     },
     onError(err) {
       messages.value[aiIdx].content = `❌ ${err.message}`

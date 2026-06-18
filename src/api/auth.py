@@ -8,7 +8,7 @@ POST /api/auth/logout   — 登出
 """
 
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,12 +29,13 @@ from src.auth.schemas import (
     UserRegisterRequest,
     UserLoginRequest,
     TokenRefreshRequest,
+    LogoutRequest,
     PasswordChangeRequest,
     TokenResponse,
     UserResponse,
     MessageResponse,
 )
-from src.cache.redis_client import add_to_blacklist, is_blacklisted
+from src.cache.redis_client import add_to_blacklist, is_blacklisted, check_and_blacklist
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -66,8 +67,8 @@ async def register(
     await session.refresh(user)
 
     # 生成 token
-    access_token = create_access_token(user.id, user.username)
-    refresh_token = create_refresh_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username, user.token_version)
+    refresh_token = create_refresh_token(user.id, user.username, user.token_version)
 
     return TokenResponse(
         access_token=access_token,
@@ -100,8 +101,8 @@ async def login(
         )
 
     # 生成 token
-    access_token = create_access_token(user.id, user.username)
-    refresh_token = create_refresh_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username, user.token_version)
+    refresh_token = create_refresh_token(user.id, user.username, user.token_version)
 
     return TokenResponse(
         access_token=access_token,
@@ -129,13 +130,17 @@ async def refresh_token(
             detail="请使用 refresh_token 刷新",
         )
 
-    # 检查黑名单
+    # 原子检查并加入黑名单（防止并发重放攻击）
     jti = payload.get("jti")
-    if jti and await is_blacklisted(jti):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="此 refresh_token 已被撤销",
-        )
+    if jti:
+        remaining = int((datetime.fromtimestamp(payload["exp"], tz=timezone.utc) -
+                         datetime.now(timezone.utc)).total_seconds())
+        if remaining > 0:
+            if not await check_and_blacklist(jti, remaining):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="此 refresh_token 已被使用（检测到并发刷新）",
+                )
 
     user_id = int(payload["sub"])
     username = payload["username"]
@@ -149,34 +154,53 @@ async def refresh_token(
             detail="账号不存在或已禁用",
         )
 
-    # 将旧的 refresh_token 加入黑名单（防止重用）
-    if jti:
-        remaining = int((datetime.fromtimestamp(payload["exp"], tz=timezone.utc) -
-                         datetime.now(timezone.utc)).total_seconds())
-        if remaining > 0:
-            await add_to_blacklist(jti, remaining)
-
     # 签发新 token
-    new_access = create_access_token(user.id, user.username)
-    new_refresh = create_refresh_token(user.id, user.username)
+    new_access = create_access_token(user.id, user.username, user.token_version)
+    new_refresh = create_refresh_token(user.id, user.username, user.token_version)
 
     return TokenResponse(access_token=new_access, refresh_token=new_refresh)
 
 
 @router.post("/logout", response_model=MessageResponse)
 async def logout(
+    request: Request,
+    req: LogoutRequest | None = None,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_async_session),
 ):
-    """
-    登出：将 access_token 和 refresh_token 加入黑名单。
+    """登出：将 access_token 和 refresh_token（如提供）加入 Redis 黑名单。
 
-    注意：客户端需要配合将 refresh_token 从本地清除。
+    客户端需配合清除本地 token（access_token + refresh_token）。
     """
-    # 注意：这里需要从 Authorization header 拿到 raw token
-    # FastAPI 的 HTTPBearer 自动解析，我们在这里只能拿到 decoded user
-    # 实际上黑名单需要在中间件层面检查，这里做不了
-    # 简化处理：客户端登出后自行清除 token
+    # 1. 黑名单当前 access_token
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        raw_token = auth_header[7:]
+        try:
+            payload = decode_token(raw_token)
+            jti = payload.get("jti")
+            if jti:
+                # 计算 token 剩余有效时间作为黑名单 TTL
+                remaining = int((datetime.fromtimestamp(payload["exp"], tz=timezone.utc) -
+                                 datetime.now(timezone.utc)).total_seconds())
+                if remaining > 0:
+                    await add_to_blacklist(jti, remaining)
+        except Exception:
+            pass  # token 解析失败不影响登出流程
+
+    # 2. 黑名单 refresh_token（如客户端提供）
+    if req and req.refresh_token:
+        try:
+            payload = decode_token(req.refresh_token)
+            if payload.get("type") == "refresh":
+                jti = payload.get("jti")
+                if jti:
+                    remaining = int((datetime.fromtimestamp(payload["exp"], tz=timezone.utc) -
+                                     datetime.now(timezone.utc)).total_seconds())
+                    if remaining > 0:
+                        await add_to_blacklist(jti, remaining)
+        except Exception:
+            pass  # refresh_token 解析失败不影响登出流程
+
     return MessageResponse(message="已登出，请清除本地 token")
 
 

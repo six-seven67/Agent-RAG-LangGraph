@@ -18,7 +18,7 @@ import src.config as config
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
 
-def create_access_token(user_id: int, username: str) -> str:
+def create_access_token(user_id: int, username: str, token_version: int = 0) -> str:
     """
     生成短期 access_token。
 
@@ -27,6 +27,7 @@ def create_access_token(user_id: int, username: str) -> str:
         - username: 用户名
         - jti: token 唯一 ID（用于黑名单）
         - type: "access"
+        - ver: token_version（改密码时递增，使旧 token 失效）
         - iat / exp: 签发时间 / 过期时间
     """
     now = datetime.now(TZ)
@@ -35,13 +36,14 @@ def create_access_token(user_id: int, username: str) -> str:
         "username": username,
         "jti": uuid.uuid4().hex,
         "type": "access",
+        "ver": token_version,
         "iat": now,
         "exp": now + timedelta(minutes=config.JWT_ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, config.JWT_SECRET_KEY, algorithm=config.JWT_ALGORITHM)
 
 
-def create_refresh_token(user_id: int, username: str) -> str:
+def create_refresh_token(user_id: int, username: str, token_version: int = 0) -> str:
     """
     生成长期 refresh_token。
 
@@ -49,6 +51,7 @@ def create_refresh_token(user_id: int, username: str) -> str:
         - sub: user_id (str)
         - type: "refresh"
         - jti: token 唯一 ID
+        - ver: token_version（改密码时递增，使旧 token 失效）
         - iat / exp: 签发时间 / 过期时间
     """
     now = datetime.now(TZ)
@@ -57,6 +60,7 @@ def create_refresh_token(user_id: int, username: str) -> str:
         "username": username,
         "jti": uuid.uuid4().hex,
         "type": "refresh",
+        "ver": token_version,
         "iat": now,
         "exp": now + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
     }

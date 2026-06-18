@@ -8,6 +8,7 @@ DELETE /api/chat/history/{sid} — 清空会话历史
 GET  /api/chat/sessions       — 获取用户会话列表
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -41,12 +42,16 @@ router = APIRouter(prefix="/api/chat", tags=["对话"])
 
 # AgentService 实例池（按 user_id 缓存，避免每次请求重新初始化 embedding/BM25/Chroma）
 _agent_service_pool: dict = {}
+_pool_lock = asyncio.Lock()
 
-def _get_agent_service(user_id: int = None):
+
+async def _get_agent_service(user_id: int = None):
     """获取缓存的 Agent 服务实例（支持用户隔离）。
 
     每个 user_id 对应一个长期存活的 AgentService，避免每次请求
     重新加载 embedding 模型、BM25 索引和 Chroma 全量文档。
+
+    使用 asyncio.Lock + 双重检查防止并发请求创建多个实例。
 
     Args:
         user_id: 用户 ID，None 时使用默认配置
@@ -54,10 +59,17 @@ def _get_agent_service(user_id: int = None):
     from src.agent.service import AgentService
 
     key = user_id if user_id is not None else "__default__"
-    if key not in _agent_service_pool:
+    if key in _agent_service_pool:
+        return _agent_service_pool[key]
+
+    async with _pool_lock:
+        # 双重检查：锁内再次确认
+        if key in _agent_service_pool:
+            return _agent_service_pool[key]
+
         logger.info("创建 AgentService 实例（user=%s），首次初始化包含 embedding/BM25/Chroma 加载", user_id)
         _agent_service_pool[key] = AgentService(user_id=user_id)
-    return _agent_service_pool[key]
+        return _agent_service_pool[key]
 
 
 async def cleanup_agent_services():
@@ -205,12 +217,20 @@ async def chat(
     await db_session.commit()
 
     # 调用 Agent 服务（实例池缓存，不可 close）
-    agent_svc = _get_agent_service(user_id=current_user.id)
+    agent_svc = await _get_agent_service(user_id=current_user.id)
     try:
         answer = await agent_svc.ainvoke({"input": query}, session_config)
     except Exception as e:
         logger.error("POST /chat: Agent 调用失败 user=%s session=%s: %s",
                       current_user.id, session_id, e, exc_info=True)
+        # 保存错误回复，避免用户消息成为孤立记录
+        error_answer = "抱歉，服务暂时不可用，请稍后重试。"
+        ai_msg = ChatHistory(
+            user_id=current_user.id, session_id=session_id,
+            role="assistant", content=error_answer,
+        )
+        db_session.add(ai_msg)
+        await db_session.commit()
         raise HTTPException(status_code=500, detail=f"Agent 服务错误: {str(e)}")
 
     # 保存 AI 回答
@@ -287,12 +307,12 @@ async def chat_stream(
     db_session.add(user_msg)
     await db_session.commit()
 
-    agent_svc = _get_agent_service(user_id=current_user.id)
+    agent_svc = await _get_agent_service(user_id=current_user.id)
 
     async def event_generator():
         full_answer_parts = []
         event_stats = {"token": 0, "tool_start": 0, "tool_end": 0,
-                       "summarize": 0, "session_end": 0, "error": 0}
+                       "summarize": 0, "session_end": 0, "hallucination": 0, "error": 0}
         try:
             async for event in agent_svc.astream(
                 {"input": query}, session_config
@@ -325,6 +345,10 @@ async def chat_stream(
                     logger.info("SSE: 会话结束总结事件（session=%s）", session_id)
                     yield {"event": "session_end", "data": ""}
 
+                elif event_type == "hallucination":
+                    logger.warning("SSE: 幻觉校验失败，触发重试（session=%s）", session_id)
+                    yield {"event": "hallucination", "data": event_data}
+
                 elif event_type == "thinking":
                     yield {"event": "thinking", "data": ""}
 
@@ -333,7 +357,11 @@ async def chat_stream(
                           current_user.id, session_id, e, exc_info=True)
             event_stats["error"] += 1
             yield {"event": "error", "data": str(e)}
-            return
+            # 不 return：让 finally 保存已有回复，然后 done 事件正常发送
+            # 同时追加错误提示，避免前端显示空回复
+            error_msg = "抱歉，服务暂时不可用，请稍后重试。"
+            full_answer_parts.append(error_msg)
+            yield {"event": "token", "data": error_msg}
 
         finally:
             # 流结束后保存 AI 回答到 MySQL

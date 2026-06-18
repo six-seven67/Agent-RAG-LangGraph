@@ -51,6 +51,10 @@ def classify_chunk(msg, metadata: dict, service) -> dict:
     if isinstance(msg, SystemMessage) and "[对话历史摘要]" in str(msg.content):
         return {"type": "summarize", "data": ""}
 
+    # Case 1b: 幻觉校验失败 → 通知前端重新生成
+    if isinstance(msg, SystemMessage) and "[系统指令] 上一轮回答存在事实问题" in str(msg.content):
+        return {"type": "hallucination", "data": "检测到回答可能不准确，正在重新生成..."}
+
     # Case 2: AI 文本 token（流式）
     if isinstance(msg, AIMessageChunk):
         if msg.content:
@@ -91,6 +95,11 @@ def classify_chunk(msg, metadata: dict, service) -> dict:
 
         if "[HALLUCINATION_FAIL]" in str(content):
             return {"type": "hallucination", "data": "检测到回答可能不准确，正在重新生成..."}
+
+        # 闲聊直接回复（[CHAT] 标记 → 去除标记后作为 token 输出）
+        if "[CHAT]" in str(content):
+            clean = str(content).replace("[CHAT] ", "")
+            return {"type": "token", "data": clean}
 
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             valid_tools = []

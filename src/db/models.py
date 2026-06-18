@@ -25,6 +25,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     email = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
+    token_version = Column(Integer, default=0, nullable=False)  # 改密码时+1，使旧 token 失效
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

@@ -59,8 +59,9 @@ async def change_password(
             detail="旧密码不正确",
         )
 
-    # 更新为新密码
+    # 更新为新密码，同时递增 token_version 使所有旧 token 失效
     current_user.password_hash = hash_password(req.new_password)
+    current_user.token_version += 1
     await session.commit()
 
-    return MessageResponse(message="密码修改成功")
+    return MessageResponse(message="密码修改成功，请重新登录")

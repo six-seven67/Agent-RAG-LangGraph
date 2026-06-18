@@ -15,6 +15,7 @@ build/
 
 # ===== 向量库与本地数据（体积大、可重建）=====
 data/chroma/
+data/documents/
 *.sqlite3
 
 # ===== 本地笔记（不上传）=====

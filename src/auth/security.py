@@ -16,7 +16,9 @@ from src.db.models import User
 from src.auth.jwt_handler import decode_token
 
 # HTTP Bearer 认证方案
-bearer_scheme = HTTPBearer()
+# auto_error=False：不在 HTTPBearer 层直接抛异常，改为在 get_current_user 中
+# 统一返回 401（而非 403），使前端 auto-refresh 机制能正常触发
+bearer_scheme = HTTPBearer(auto_error=False)
 
 # bcrypt 单条密码最大长度（72 字节）
 _BCRYPT_MAX_LENGTH = 72
@@ -41,7 +43,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_async_session),
 ) -> User:
     """
@@ -53,14 +55,19 @@ async def get_current_user(
             ...
 
     Raises:
-        HTTPException 401: token 无效、过期或用户不存在
+        HTTPException 401: token 无效、过期、缺失或用户不存在
+        HTTPException 403: 账号已被禁用
     """
-    token = credentials.credentials
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无法验证凭据",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    if credentials is None:
+        raise credentials_exception
+
+    token = credentials.credentials
 
     try:
         payload = decode_token(token)
@@ -92,17 +99,27 @@ async def get_current_user(
             detail="账号已被禁用",
         )
 
+    # 验证 token_version：改密码后旧 token 自动失效
+    token_ver = payload.get("ver", 0)
+    if token_ver != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="密码已修改，请重新登录",
+        )
+
     return user
 
 
 async def get_optional_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_async_session),
 ) -> User | None:
     """
     可选的认证依赖：解析成功返回用户，失败返回 None。
     用于同时支持匿名和登录用户的端点。
     """
+    if credentials is None:
+        return None
     try:
         return await get_current_user(credentials, session)
     except HTTPException:

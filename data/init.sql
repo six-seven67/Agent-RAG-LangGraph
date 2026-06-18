@@ -29,6 +29,7 @@ CREATE TABLE `users` (
     `password_hash` VARCHAR(255)    NOT NULL                 COMMENT 'bcrypt 密码哈希值',
     `email`         VARCHAR(100)    DEFAULT NULL             COMMENT '邮箱地址',
     `is_active`     TINYINT(1)      NOT NULL DEFAULT 1      COMMENT '账号启用状态：1=启用, 0=禁用',
+    `token_version` INT             NOT NULL DEFAULT 0      COMMENT 'Token 版本号（改密码时+1，使旧 token 失效）',
     `created_at`    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
     `updated_at`    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
     PRIMARY KEY (`id`),

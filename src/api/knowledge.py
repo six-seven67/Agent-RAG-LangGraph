@@ -136,33 +136,55 @@ async def upload_document(
             detail="文件已存在，请勿重复上传",
         )
 
-    # ---- 7. 上传到 Chroma 知识库 ----
-    kb_svc = _get_kb_service(current_user.id)
-    operator = current_user.username or str(current_user.id)
-    upload_result = await kb_svc.upload_bt_str(
-        data=cleaned_text,
-        filename=filename,
-        md5_str=md5_str,
-        operator=operator,
-    )
-
-    if not upload_result["success"]:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=upload_result["message"],
-        )
-
-    chunk_count = upload_result["chunk_count"]
-
-    # ---- 8. 记录到 MySQL ----
+    # ---- 7. 先记录到 MySQL（权威源）----
+    # MySQL 作为权威数据源，先写入记录。如果后续 Chroma 写入失败，回滚 MySQL 记录。
     doc_record = KnowledgeDoc(
         user_id=current_user.id,
         filename=filename,
         md5_hash=md5_str,
-        chunk_count=chunk_count,
+        chunk_count=0,  # 先占位，Chroma 上传成功后更新
     )
     session.add(doc_record)
     await session.commit()
+    await session.refresh(doc_record)
+
+    # ---- 8. 上传到 Chroma 知识库 ----
+    kb_svc = _get_kb_service(current_user.id)
+    operator = current_user.username or str(current_user.id)
+    try:
+        upload_result = await kb_svc.upload_bt_str(
+            data=cleaned_text,
+            filename=filename,
+            md5_str=md5_str,
+            operator=operator,
+        )
+
+        if not upload_result["success"]:
+            # Chroma 写入失败 → 回滚 MySQL 记录 + 删除原文件
+            await session.delete(doc_record)
+            await session.commit()
+            _delete_file(saved_path)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=upload_result["message"],
+            )
+
+        chunk_count = upload_result["chunk_count"]
+        doc_record.chunk_count = chunk_count
+        await session.commit()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Chroma 异常 → 回滚 MySQL 记录 + 删除原文件
+        logger.error("Chroma 上传失败，回滚 MySQL 记录: filename=%s, error=%s", filename, e)
+        await session.delete(doc_record)
+        await session.commit()
+        _delete_file(saved_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"知识库写入失败: {str(e)}",
+        )
 
     logger.info("上传成功: user=%s, filename=%s, chunks=%d, saved=%s",
                 current_user.id, filename, chunk_count, saved_path)
